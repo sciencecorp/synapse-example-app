@@ -81,6 +81,17 @@ COPY external ${VCPKG_ROOT}/external/
 RUN cd ${VCPKG_ROOT} && \
     ./vcpkg install --triplet arm64-linux-dynamic-release --clean-after-build
 
+# Set up and install our synapse SDK package
+# Make sure we have science keys
+COPY ops/keys/science-repo-public.asc /usr/share/keyrings/scifi-repo-science-public.asc
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    echo "deb [signed-by=/usr/share/keyrings/scifi-repo-science-public.asc] https://pub-879bfa29e67b4cd6b0c78b0d4cc3aa59.r2.dev/scifi focal main" > /etc/apt/sources.list.d/repo-science.list && \
+    apt-get update && \
+    apt-get install -y synapse-app-sdk && \
+    rm -rf /var/lib/apt/lists/*
+
+
 ENV VCPKG_INSTALLATION_ROOT=${VCPKG_ROOT}
 ENV CMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake
 ENV VCPKG_INSTALLED_DIR=${VCPKG_ROOT}/vcpkg_installed
