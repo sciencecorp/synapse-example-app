@@ -1,0 +1,43 @@
+#!/bin/bash
+# Launches 
+# Will need to be run as root
+# We might be able to get away with this as a normal user using CAP_SYS_NICE and CAP_SYS_RESOURCE, but we'll need to test
+# TODO: this should be configurable
+SYNAPSE_EXAMPLE_APP_EXE="synapse-example-app"
+
+# set the process priority to something high
+if ! renice -n -10 $$ > /dev/null 2>&1; then
+    echo "Failed to set process priority"
+    exit 1
+fi
+
+# Set CPU scheduler to FIFO
+# Might drop this down if the system is unstable
+if ! chrt -f -p 50 $$ > /dev/null 2>&1; then
+    echo "Failed to set CPU scheduler to FIFO"
+    exit 1
+fi
+
+# Note: Uncomment to set the CPU affinity to specific cores
+# taskset -c 0-3 $$ > /dev/null 2>&1
+
+# Set maximum locked memory to unlimited
+# ulimit -l unlimited
+
+# Set max UDP write buffer size to 4MB
+sysctl -w net.core.wmem_max=4194304
+sysctl -w net.core.wmem_default=4194304
+
+
+# Set up LD_LIBRARY_PATH to prefer our local libraries and user libraries
+export LD_LIBRARY_PATH=/opt/scifi/usr-libs:/opt/scifi/lib:$LD_LIBRARY_PATH
+
+# Launch the server
+export SCIFI_ROOT=${SCIFI_ROOT:-/opt/scifi}
+PATH_TO_EXE="$SCIFI_ROOT/bin/${SYNAPSE_EXAMPLE_APP_EXE}"
+if [ ! -x "${PATH_TO_EXE}" ]; then
+    echo "Server binary not found or not executable" >&2
+    exit 1
+fi
+
+exec "${PATH_TO_EXE}" "$@"
