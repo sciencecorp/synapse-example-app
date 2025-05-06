@@ -1,5 +1,7 @@
 FROM ubuntu:20.04
 
+ARG VCPKG_COMMIT=0f88ecb8528605f91980b90a2c5bad88e3cb565f
+
 ENV DEBIAN_FRONTEND=noninteractive
 
 # We need to be able to cross compile
@@ -8,7 +10,7 @@ RUN dpkg --add-architecture arm64 && \
     echo "deb [arch=arm64] http://ports.ubuntu.com/ focal main restricted" >> /etc/apt/sources.list.d/arm64-cross-compile.list && \
     echo "deb [arch=arm64] http://ports.ubuntu.com/ focal-updates main restricted" >> /etc/apt/sources.list.d/arm64-cross-compile.list
 
-# Build depens
+# Build dependss
 RUN apt-get update && apt-get install -y \
     autoconf \
     autoconf-archive \
@@ -91,11 +93,10 @@ RUN apt-get update && \
     apt-get install -y synapse-app-sdk && \
     rm -rf /var/lib/apt/lists/*
 
-
 ENV VCPKG_INSTALLATION_ROOT=${VCPKG_ROOT}
 ENV CMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake
 ENV VCPKG_INSTALLED_DIR=${VCPKG_ROOT}/vcpkg_installed
 
 # Entry point for the container
-WORKDIR /home/scifi
+WORKDIR /home/workspace
 CMD ["/bin/bash"]

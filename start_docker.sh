@@ -3,13 +3,10 @@ set -e
 
 # Detect architecture
 ARCH=$(uname -m)
-if [ "$ARCH" = "x86_64" ]; then
-  TAG_SUFFIX="amd64"
-elif [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
-  TAG_SUFFIX="arm64"
+if [[ "${ARCH}" == "arm64" || "${ARCH}" == "aarch64" ]]; then
+    TAG_SUFFIX="arm64"
 else
-  echo "Unsupported architecture: $ARCH"
-  exit 1
+    TAG_SUFFIX="amd64"
 fi
 
 # Image name
@@ -27,5 +24,5 @@ echo "Starting container for architecture: $ARCH"
 # Adjust volume mappings as needed for your project
 docker run -it \
   --rm \
-  -v "$(pwd):/workspace" \
+  -v "$(pwd):/home/workspace" \
   $IMAGE
