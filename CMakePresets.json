@@ -11,7 +11,12 @@
             "displayName": "Configure (Dynamic)",
             "description": "Configure (Dynamic)",
             "binaryDir": "${sourceDir}/build",
+            "generator": "Unix Makefiles",
             "cacheVariables": {
+                "CMAKE_TOOLCHAIN_FILE": {
+                    "type": "FILEPATH",
+                    "value": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+                },
                 "BUILD_SHARED_LIBS": {
                     "type": "BOOL",
                     "value": "ON"
@@ -23,7 +28,16 @@
             "displayName": "Configure aarch64 (Dynamic)",
             "description": "Configure aarch64 (Dynamic)",
             "binaryDir": "${sourceDir}/build-aarch64",
+            "generator": "Unix Makefiles",
             "cacheVariables": {
+                "CMAKE_TOOLCHAIN_FILE": {
+                    "type": "FILEPATH",
+                    "value": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+                },
+                "VCPKG_INSTALLED_DIR": {
+                    "type": "FILEPATH",
+                    "value": "$env{VCPKG_INSTALLED_DIR}"
+                },
                 "BUILD_SHARED_LIBS": {
                     "type": "BOOL",
                     "value": "ON"

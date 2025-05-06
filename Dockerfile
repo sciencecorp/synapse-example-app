@@ -65,5 +65,26 @@ RUN wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/nul
 RUN gem install dotenv -v 2.8.1
 RUN gem install --no-document fpm
 
+# VCPKG setup
+ENV VCPKG_ROOT=/vcpkg \
+    PATH="${PATH}:/vcpkg"
+
+ENV VCPKG_FORCE_SYSTEM_BINARIES=true
+RUN git clone https://github.com/microsoft/vcpkg.git ${VCPKG_ROOT} && \
+    cd ${VCPKG_ROOT} && \
+    git checkout ${VCPKG_COMMIT} && \
+    ./bootstrap-vcpkg.sh -disableMetrics
+
+COPY vcpkg.json ${VCPKG_ROOT}
+COPY external ${VCPKG_ROOT}/external/
+
+RUN cd ${VCPKG_ROOT} && \
+    ./vcpkg install --triplet arm64-linux-dynamic-release --clean-after-build
+
+ENV VCPKG_INSTALLATION_ROOT=${VCPKG_ROOT}
+ENV CMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake
+ENV VCPKG_INSTALLED_DIR=${VCPKG_ROOT}/vcpkg_installed
+
 # Entry point for the container
+WORKDIR /home/scifi
 CMD ["/bin/bash"]
