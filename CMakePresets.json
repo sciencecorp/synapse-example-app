@@ -1,0 +1,76 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 20,
+        "patch": 1
+    },
+    "configurePresets": [
+        {
+            "name": "dynamic",
+            "displayName": "Configure (Dynamic)",
+            "description": "Configure (Dynamic)",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "BUILD_SHARED_LIBS": {
+                    "type": "BOOL",
+                    "value": "ON"
+                }
+            }
+        },
+        {
+            "name": "dynamic-aarch64",
+            "displayName": "Configure aarch64 (Dynamic)",
+            "description": "Configure aarch64 (Dynamic)",
+            "binaryDir": "${sourceDir}/build-aarch64",
+            "cacheVariables": {
+                "BUILD_SHARED_LIBS": {
+                    "type": "BOOL",
+                    "value": "ON"
+                },
+                "BUILD_FOR_ARM64": {
+                    "type": "BOOL",
+                    "value": "ON"
+                },
+                "BUILD_FOR_QCS6490": {
+                    "type": "BOOL",
+                    "value": "ON"
+                },
+                "CMAKE_BUILD_TYPE": {
+                    "type": "STRING",
+                    "value": "Release"
+                }
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "debug",
+            "configurePreset": "dynamic",
+            "displayName": "Build (Debug)",
+            "description": "Build (Debug)",
+            "configuration": "Debug"
+        },
+        {
+            "name": "release",
+            "configurePreset": "dynamic",
+            "displayName": "Build (Release)",
+            "description": "Build (Release)",
+            "configuration": "Release"
+        },
+        {
+            "name": "cross",
+            "configurePreset": "dynamic-aarch64",
+            "displayName": "Build (aarch64 Debug)",
+            "description": "Build (aarch64 Debug)",
+            "configuration": "Debug"
+        },
+        {
+            "name": "cross-release",
+            "configurePreset": "dynamic-aarch64",
+            "displayName": "Build (aarch64 Release)",
+            "description": "Build (aarch64 Release)",
+            "configuration": "Release"
+        }
+    ]
+}
