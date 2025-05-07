@@ -90,5 +90,9 @@ ENV VCPKG_INSTALLATION_ROOT=${VCPKG_ROOT}
 ENV CMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake
 ENV VCPKG_INSTALLED_DIR=${VCPKG_ROOT}/vcpkg_installed
 
+# Older versions of dotenv for older versions of ubuntu
+RUN gem install dotenv -v 2.8.1
+RUN gem install --no-document fpm
+
 WORKDIR /home/workspace
 CMD ["/bin/bash"]
