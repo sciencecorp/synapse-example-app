@@ -153,11 +153,11 @@ void ExampleApp::run_main_loop() {
     // Then, send off your data using the publisher you configured earlier
     // In this demo, we use a ZMQ publisher over tcp
     if (publish_rate_limiter_.reset_if_elapsed()) {
-      if (!data_publisher_->try_publish(output_tensor)) {
-        spdlog::warn("Tried to publish data, but failed");
+      if (publish_tap("joystick_out", output_tensor)) {
+        spdlog::info("Published tensor: [x,y]: [{},{}]", tensor_data[0], tensor_data[1]);
+      } else {
+        spdlog::warn("Failed to publish tensor data");
       }
-      publish_tap("joystick_out", output_tensor);
-      spdlog::info("Published tensor: [x,y]: [{},{}]", tensor_data[0], tensor_data[1]);
       const auto loop_dt_ns = synapse::get_steady_clock_now() - start_of_loop_ns;
       spdlog::info("Loop took: {} ms", loop_dt_ns.count() * 1e-6);
     }

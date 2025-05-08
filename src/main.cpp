@@ -42,12 +42,7 @@ int main(const int argc, const char* argv[]) {
 
   // Setup our node
   controller_app = std::make_unique<app::ExampleApp>();
-
-  if (!controller_app->setup_publisher(synapse::PublisherType::ZMQ_TCP, "tcp://*:54878")) {
-    spdlog::warn("Failed to set up publisher for controller");
-    return 1;
-  }
-
+  
   if (!controller_app->setup_reader(broadband_node_id)) {
     spdlog::warn("Failed to set up reader for controller");
     return 1;
