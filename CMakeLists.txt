@@ -27,6 +27,7 @@ file(GLOB_RECURSE EXAMPLE_APP_SOURCES
 )
 
 set(SYNAPSE_EXAMPLE_APP_TARGET synapse-example-app)
+
 # Add the sources to the build
 add_executable(${SYNAPSE_EXAMPLE_APP_TARGET}
     ${EXAMPLE_APP_SOURCES}
@@ -49,6 +50,8 @@ set_target_properties(${SYNAPSE_EXAMPLE_APP_TARGET} PROPERTIES
 target_include_directories(${SYNAPSE_EXAMPLE_APP_TARGET}
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+   PRIVATE 
+        ${PROTO_OUT_DIR}
 )
 
 # Link dependencies
