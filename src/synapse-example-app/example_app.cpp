@@ -8,6 +8,12 @@ void ExampleApp::run_main_loop() {
   const float bin_size_ms = 10;
   std::vector<synapse::BroadbandFrame> broadband_frames;
 
+  // Set up our taps
+  if (!create_tap<synapse::Tensor>("joystick_out")) {
+    spdlog::warn("Failed to create tap for joystick out");
+    return;
+  }
+
   while (node_running_) {
     // Receive data from the node you configured
     if (!wait_for_frames(broadband_frames, bin_size_ms)) {
@@ -150,6 +156,7 @@ void ExampleApp::run_main_loop() {
       if (!data_publisher_->try_publish(output_tensor)) {
         spdlog::warn("Tried to publish data, but failed");
       }
+      publish_tap("joystick_out", output_tensor);
       spdlog::info("Published tensor: [x,y]: [{},{}]", tensor_data[0], tensor_data[1]);
       const auto loop_dt_ns = synapse::get_steady_clock_now() - start_of_loop_ns;
       spdlog::info("Loop took: {} ms", loop_dt_ns.count() * 1e-6);
