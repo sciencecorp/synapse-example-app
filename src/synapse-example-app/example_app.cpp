@@ -183,7 +183,7 @@ bool ExampleApp::wait_for_frames(std::vector<synapse::BroadbandFrame>& frames,
   uint64_t first_timestamp_ns = 0;
 
   // TODO: We should consider having a timeout here
-  while (true) {
+  while (node_running_) {
     // In this example, we are listening to BroadbandFrame data
     // TODO: the broadband node sends over the messages using multipart
     // Figure out why this is the case
