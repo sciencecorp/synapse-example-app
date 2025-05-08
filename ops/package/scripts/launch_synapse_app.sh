@@ -4,6 +4,7 @@
 # We might be able to get away with this as a normal user using CAP_SYS_NICE and CAP_SYS_RESOURCE, but we'll need to test
 # TODO: this should be configurable
 SYNAPSE_EXAMPLE_APP_EXE="synapse-example-app"
+MANIFEST_FILE="/opt/scifi/config/app_manifest.json"
 
 # set the process priority to something high
 if ! renice -n -10 $$ > /dev/null 2>&1; then
