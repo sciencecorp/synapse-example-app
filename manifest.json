@@ -3,7 +3,7 @@
   "device_configuration": {
     "nodes": [
       {
-        "type": "kApplicationNode",
+        "type": "kApplication",
         "id": 2,
         "application": {
           "name": "synapse-example-app"
