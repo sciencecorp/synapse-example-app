@@ -5,19 +5,6 @@
 # TODO: this should be configurable
 SYNAPSE_EXAMPLE_APP_EXE="synapse-example-app"
 
-# set the process priority to something high
-if ! renice -n -10 $$ > /dev/null 2>&1; then
-    echo "Failed to set process priority"
-    exit 1
-fi
-
-# Set CPU scheduler to FIFO
-# Might drop this down if the system is unstable
-if ! chrt -f -p 50 $$ > /dev/null 2>&1; then
-    echo "Failed to set CPU scheduler to FIFO"
-    exit 1
-fi
-
 # Note: Uncomment to set the CPU affinity to specific cores
 # taskset -c 0-3 $$ > /dev/null 2>&1
 
