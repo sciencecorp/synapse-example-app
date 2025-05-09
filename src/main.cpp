@@ -10,15 +10,8 @@ namespace {
 std::atomic<bool> app_running{true};
 std::unique_ptr<synapse::App> controller_app = nullptr;
 
-void print_help(const std::string& program) {
-  std::cout << std::endl;
-  std::cout << "usage: " << std::endl;
-  std::cout << program << " <broadband_node_id> " << std::endl;
-  std::cout << std::endl;
-}
-
 void signal_handler(int signal) {
-  spdlog::info("Received signal: {}", signal);
+  spdlog::info("Received signal: {}, stopping synapse app", signal);
   if (controller_app) {
     controller_app->stop();
   }
@@ -26,25 +19,16 @@ void signal_handler(int signal) {
 }
 }  // namespace
 
-int main(const int argc, const char* argv[]) {
-  // Select the node to read from on the command line
-  int broadband_node_id = 1;
-  if (argc == 2) {
-    try {
-      broadband_node_id = std::stoi(argv[1]);
-    } catch (const std::exception& e) {
-      print_help(argv[0]);
-      return 1;
-    }
-  }
-  spdlog::info("Reading from broadband node: {}", broadband_node_id);
+int main(const int, const char**) {
+  // Be able to stop our app if we Ctrl-C or get a termination
   signal(SIGINT, signal_handler);
-
-  // Setup our node
-  controller_app = std::make_unique<app::ExampleApp>();
   
-  if (!controller_app->setup_reader(broadband_node_id)) {
-    spdlog::warn("Failed to set up reader for controller");
+  // Setup our example application
+  controller_app = std::make_unique<app::ExampleApp>();
+
+  // Try to set up our application
+  if (!controller_app->setup()) {
+    std::cerr << "Failed to setup synapse app" << std::endl;
     return 1;
   }
 
