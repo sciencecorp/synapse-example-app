@@ -23,6 +23,12 @@ cp "${SCRIPT_DIR}/scripts/launch_synapse_app.sh" "${STAGING_DIR}/opt/scifi/scrip
 mkdir -p ${STAGING_DIR}/etc/systemd/system
 cp "${SCRIPT_DIR}/systemd/synapse-example-app.service" "${STAGING_DIR}/etc/systemd/system/"
 
+# App SDK
+APP_SDK_DOCKER_DIR="/usr/lib/"
+APP_SDK_LIB_TARGET_DIR="${STAGING_DIR}/opt/scifi/lib"
+mkdir -p ${APP_SDK_LIB_TARGET_DIR}
+find "${APP_SDK_DOCKER_DIR}" -name "libsynapse*.so*" -exec cp -av {} ${APP_SDK_LIB_TARGET_DIR}/ \;
+
 fpm -s dir -t deb \
     -n "${SYNAPSE_APP_EXE}" \
     -f \

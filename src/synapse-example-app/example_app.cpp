@@ -3,16 +3,39 @@
 namespace app {
 ExampleApp::ExampleApp() : publish_rate_limiter_(kPublishRateSec) {}
 
+bool ExampleApp::setup() {
+  // For this example, we have configured a broadband node
+  // Get the node id so we can setup our reader of broadband data
+  const auto& broadband_node_ids 
+    = synapse::get_node_ids_for_type(
+        device_configuration_,
+        synapse::NodeType::kBroadbandSource);
+  
+  // We expect only one, so drop out if this isn't it
+  if (broadband_node_ids.size() != 1) {
+    spdlog::error("Expected to find 1 BroadbandSource, found {}", broadband_node_ids.size());
+    return false;
+  }
+
+  // We have the id, setup our reader
+  const uint32_t broadband_node_id = broadband_node_ids.front();
+  if (!setup_reader(broadband_node_id)) {
+    spdlog::warn("Failed to set up reader for controller");
+    return 1;
+  }
+  
+  // Setup our output tap
+  if (!create_tap<synapse::Tensor>("joystick_out")) {
+    spdlog::warn("Failed to create tap for joystick out");
+    return false;
+  }
+  return true;
+}
+
 void ExampleApp::run_main_loop() {
   // Store our broadband frames here
   const float bin_size_ms = 10;
   std::vector<synapse::BroadbandFrame> broadband_frames;
-
-  // Set up our taps
-  if (!create_tap<synapse::Tensor>("joystick_out")) {
-    spdlog::warn("Failed to create tap for joystick out");
-    return;
-  }
 
   while (node_running_) {
     // Receive data from the node you configured

@@ -85,12 +85,13 @@ RUN cd ${VCPKG_ROOT} && \
 
 # Set up and install our synapse SDK package
 # Make sure we have science keys
+ARG SDK_VERSION=0.2.2
 COPY ops/keys/science-repo-public.asc /usr/share/keyrings/scifi-repo-science-public.asc
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates && \
     echo "deb [signed-by=/usr/share/keyrings/scifi-repo-science-public.asc] https://pub-879bfa29e67b4cd6b0c78b0d4cc3aa59.r2.dev/scifi focal main" > /etc/apt/sources.list.d/repo-science.list && \
     apt-get update && \
-    apt-get install -y synapse-app-sdk && \
+    apt-get install -y synapse-app-sdk=${SDK_VERSION} && \
     rm -rf /var/lib/apt/lists/*
 
 ENV VCPKG_INSTALLATION_ROOT=${VCPKG_ROOT}

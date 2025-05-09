@@ -20,6 +20,8 @@ class ExampleApp : public synapse::App {
  public:
   ExampleApp();
 
+  virtual bool setup() override;
+
  protected:
   virtual void run_main_loop() override;
 
