@@ -81,9 +81,6 @@ void ExampleApp::run_main_loop() {
 
             // Increment the spike count for this channel
             spike_counts[channel_id]++;
-
-            spdlog::info("Detected spike on channel {} at timestamp {}", channel_id,
-                         spike_event->timestamp);
           }
         }
       }
@@ -123,8 +120,6 @@ void ExampleApp::run_main_loop() {
       // Normalize to reasonable range (-1 to 1)
       cursor_x = std::clamp(cursor_x / max_expected_rate_, -1.0f, 1.0f);
       cursor_y = std::clamp(cursor_y / max_expected_rate_, -1.0f, 1.0f);
-
-      spdlog::info("Cursor position from neural activity: ({:.2f}, {:.2f})", cursor_x, cursor_y);
     } else {
       // Not enough data in window yet, use default values
       cursor_x = 0.0f;
