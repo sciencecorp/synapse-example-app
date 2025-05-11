@@ -4,6 +4,9 @@ project(synapse-example-app)
 include("cmake/protos.cmake")
 
 option(BUILD_FOR_ARM64 "Build for ARM64 architecture" OFF)
+option(USE_LOCAL_SDK "Use locally built SDK instead of system installation" ON)
+set(LOCAL_SDK_PATH "app-sdk" CACHE PATH "Path to local SDK build directory")
+
 if (BUILD_FOR_ARM64 AND NOT CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
   message(STATUS "Cross compiling for ARM64")
   set(CMAKE_SYSTEM_NAME Linux)
@@ -19,16 +22,31 @@ find_package(Protobuf REQUIRED)
 find_package(spdlog REQUIRED CONFIG)
 find_package(iir REQUIRED CONFIG)
 
-find_library(SYNAPSE_APP_SDK_LIB NAMES synapse-app-sdk libsynapse-app-sdk.so.0.1.0)
+if(USE_LOCAL_SDK)
+    if(NOT LOCAL_SDK_PATH)
+        message(FATAL_ERROR "USE_LOCAL_SDK is ON but LOCAL_SDK_PATH is not set")
+    endif()
+    message(STATUS "Using local SDK from: ${LOCAL_SDK_PATH}")
+    
+    set(SDK_LIB_PATH "${LOCAL_SDK_PATH}")
+    set(SDK_LIB_NAME "synapse-app-sdk")
+    link_directories(${SDK_LIB_PATH})
+    
+    set(SYNAPSE_APP_SDK_LIB ${SDK_LIB_NAME})
+    
+    include_directories("${LOCAL_SDK_PATH}/include")
+else()
+    find_library(SYNAPSE_APP_SDK_LIB NAMES synapse-app-sdk libsynapse-app-sdk.so.0.1.0)
+endif()
 
-# Gather all the sources
+message(STATUS "SYNAPSE_APP_SDK_LIB: ${SYNAPSE_APP_SDK_LIB}")
+
 file(GLOB_RECURSE EXAMPLE_APP_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
 )
 
 set(SYNAPSE_EXAMPLE_APP_TARGET synapse-example-app)
 
-# Add the sources to the build
 add_executable(${SYNAPSE_EXAMPLE_APP_TARGET}
     ${EXAMPLE_APP_SOURCES}
 )
@@ -46,7 +64,6 @@ set_target_properties(${SYNAPSE_EXAMPLE_APP_TARGET} PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 
-# Add the include directory
 target_include_directories(${SYNAPSE_EXAMPLE_APP_TARGET}
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
