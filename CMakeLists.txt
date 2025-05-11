@@ -4,7 +4,7 @@ project(synapse-example-app)
 include("cmake/protos.cmake")
 
 option(BUILD_FOR_ARM64 "Build for ARM64 architecture" OFF)
-option(USE_LOCAL_SDK "Use locally built SDK instead of system installation" ON)
+option(USE_LOCAL_SDK "Use locally built SDK instead of system installation" OFF)
 set(LOCAL_SDK_PATH "app-sdk" CACHE PATH "Path to local SDK build directory")
 
 if (BUILD_FOR_ARM64 AND NOT CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
