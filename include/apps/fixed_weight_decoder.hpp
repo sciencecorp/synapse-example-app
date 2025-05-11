@@ -3,11 +3,11 @@
 #include <random>
 #include <deque>
 
-#include "synapse-app-sdk/app/app.hpp"
-#include "synapse-app-sdk/utils/time/time.hpp"
-#include "synapse-app-sdk/middleware/conversions.hpp"
-#include "synapse-app-sdk/dsp/filter/bandpass.hpp"
-#include "synapse-app-sdk/dsp/spike/threshold_detector.hpp"
+#include <synapse-app-sdk/app/app.hpp>
+#include <synapse-app-sdk/utils/time/time.hpp>
+#include <synapse-app-sdk/middleware/conversions.hpp>
+#include <synapse-app-sdk/dsp/filter/bandpass.hpp>
+#include <synapse-app-sdk/dsp/spike/threshold_detector.hpp>
 
 #include "api/datatype.pb.h"
 #include "api/nodes/broadband_source.pb.h"
@@ -16,10 +16,10 @@ namespace app
 {
   // 10 hz
   constexpr auto kPublishRateSec = 1.0 / 10.0;
-  class ExampleApp : public synapse::App
+  class FixedWeightDecoder : public synapse::App
   {
   public:
-    ExampleApp();
+    FixedWeightDecoder();
 
     virtual bool setup() override;
 

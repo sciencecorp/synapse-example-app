@@ -1,10 +1,23 @@
-#include "synapse-example-app/example_app.hpp"
+#include "apps/fixed_weight_decoder.hpp"
+#include <spdlog/spdlog.h>
+#include <thread>
+#include <chrono>
+#include <algorithm>                                  // for std::clamp
+#include <synapse-app-sdk/middleware/conversions.hpp> // for parse_protobuf_message
 
 namespace app
 {
-  ExampleApp::ExampleApp() : publish_rate_limiter_(kPublishRateSec) {}
+  // Helper function to clamp a value between min and max
+  template <typename T>
+  T clamp(T value, T min, T max)
+  {
+    return (value < min) ? min : (value > max) ? max
+                                               : value;
+  }
 
-  bool ExampleApp::setup()
+  FixedWeightDecoder::FixedWeightDecoder() : publish_rate_limiter_(kPublishRateSec) {}
+
+  bool FixedWeightDecoder::setup()
   {
     const uint32_t broadband_node_id = 1;
     if (!setup_reader(broadband_node_id))
@@ -22,7 +35,7 @@ namespace app
     return true;
   }
 
-  void ExampleApp::main()
+  void FixedWeightDecoder::main()
   {
     // Store our broadband frames here
     const float bin_size_ms = 10;
@@ -144,8 +157,8 @@ namespace app
         cursor_y = firing_rates[3] - firing_rates[2]; // Positive = up, negative = down
 
         // Normalize to reasonable range (-1 to 1)
-        cursor_x = std::clamp(cursor_x / max_expected_rate_, -1.0f, 1.0f);
-        cursor_y = std::clamp(cursor_y / max_expected_rate_, -1.0f, 1.0f);
+        cursor_x = clamp(cursor_x / max_expected_rate_, -1.0f, 1.0f);
+        cursor_y = clamp(cursor_y / max_expected_rate_, -1.0f, 1.0f);
       }
       else
       {
@@ -194,8 +207,8 @@ namespace app
     }
   }
 
-  bool ExampleApp::wait_for_frames(std::vector<synapse::BroadbandFrame> &frames,
-                                   float bin_size_ms)
+  bool FixedWeightDecoder::wait_for_frames(std::vector<synapse::BroadbandFrame> &frames,
+                                           float bin_size_ms)
   {
     if (bin_size_ms <= 0)
     {
@@ -283,14 +296,14 @@ namespace app
     return false;
   }
 
-  int ExampleApp::detect_dropped_frames(const uint64_t last_sequence_number,
-                                        const uint64_t current_sequence_number)
+  int FixedWeightDecoder::detect_dropped_frames(const uint64_t last_sequence_number,
+                                                const uint64_t current_sequence_number)
   {
     const auto expected_sequence_number = last_sequence_number + 1;
     return (current_sequence_number - expected_sequence_number);
   }
 
-  void ExampleApp::initialize_spike_detectors(const size_t channel_count)
+  void FixedWeightDecoder::initialize_spike_detectors(const size_t channel_count)
   {
     // Create spike detectors for each channel
     spike_detectors_.clear();
@@ -313,7 +326,7 @@ namespace app
     spike_detectors_initialized_ = true;
   }
 
-  void ExampleApp::cleanup_spike_events()
+  void FixedWeightDecoder::cleanup_spike_events()
   {
     // Free memory for all detected spike events
     for (auto spike_event : detected_spikes_)
@@ -323,9 +336,9 @@ namespace app
     detected_spikes_.clear();
   }
 
-  void ExampleApp::initialize_filters(const size_t channel_count,
-                                      const float sample_rate_hz,
-                                      const float bin_size_ms)
+  void FixedWeightDecoder::initialize_filters(const size_t channel_count,
+                                              const float sample_rate_hz,
+                                              const float bin_size_ms)
   {
     if (!initialize_cursor_channels(channel_count))
     {
@@ -353,7 +366,7 @@ namespace app
     filters_initialized_ = true;
   }
 
-  bool ExampleApp::initialize_cursor_channels(const size_t channel_count)
+  bool FixedWeightDecoder::initialize_cursor_channels(const size_t channel_count)
   {
     if (channel_count < 4)
     {
@@ -385,5 +398,5 @@ namespace app
 
 int main(const int, const char **)
 {
-  return synapse::Entrypoint<app::ExampleApp>();
+  return synapse::Entrypoint<app::FixedWeightDecoder>();
 }

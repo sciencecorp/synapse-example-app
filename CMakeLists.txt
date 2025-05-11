@@ -41,30 +41,24 @@ endif()
 
 message(STATUS "SYNAPSE_APP_SDK_LIB: ${SYNAPSE_APP_SDK_LIB}")
 
-file(GLOB_RECURSE EXAMPLE_APP_SOURCES
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
-)
-
-set(SYNAPSE_EXAMPLE_APP_TARGET synapse-example-app)
-
-add_executable(${SYNAPSE_EXAMPLE_APP_TARGET}
-    ${EXAMPLE_APP_SOURCES}
+add_executable(synapse-example-app
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/fixed_weight_decoder.cpp
 )
 
 generate_protobufs(
-    TARGET ${SYNAPSE_EXAMPLE_APP_TARGET}
+    TARGET synapse-example-app
     OUT_PROTO_DIR PROTO_OUT_DIR
 )
 
 # Be strict about the standard
-set_target_properties(${SYNAPSE_EXAMPLE_APP_TARGET} PROPERTIES
+set_target_properties(synapse-example-app PROPERTIES
     CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF
     POSITION_INDEPENDENT_CODE ON
 )
 
-target_include_directories(${SYNAPSE_EXAMPLE_APP_TARGET}
+target_include_directories(synapse-example-app
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
    PRIVATE 
@@ -72,7 +66,7 @@ target_include_directories(${SYNAPSE_EXAMPLE_APP_TARGET}
 )
 
 # Link dependencies
-target_link_libraries(${SYNAPSE_EXAMPLE_APP_TARGET}
+target_link_libraries(synapse-example-app
     PUBLIC
         cppzmq
         protobuf::libprotobuf
