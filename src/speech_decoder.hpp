@@ -94,6 +94,12 @@ namespace app
 
     // Process a filled 1-ms window (called when curr_window_ is full)
     void process_one_ms_window(std::vector<float>& sumsq, std::vector<int32_t>& thresh_cross_counts);
+
+    // ----------------- Patch batching for RNN -----------------------------
+    static constexpr size_t kPatchSizeBins   = 14; // 14 bins = 280 ms history
+    static constexpr size_t kPatchStrideBins = 4;  // emit every 4 bins (80 ms)
+    std::deque<std::vector<float>> patch_window_;  // store last kPatchSizeBins smoothed bins
+    size_t stride_bins_counter_ = 0;
   };
 } // namespace app
 
