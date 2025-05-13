@@ -6,6 +6,7 @@
 #include <numeric> // accumulate
 #include <limits>
 #include <cmath>
+#include <algorithm>
 
 #include <synapse-app-sdk/middleware/conversions.hpp>
 
@@ -17,7 +18,23 @@ namespace app
     return (value < min) ? min : (value > max) ? max : value;
   }
 
-  SpeechDecoder::SpeechDecoder() : publish_rate_limiter_(kSpeechPublishRateSec) {}
+  SpeechDecoder::SpeechDecoder() : publish_rate_limiter_(kSpeechPublishRateSec)
+  {
+    // Pre-compute causal Gaussian smoothing kernel (σ = 2 bins, length 15)
+    smoothing_kernel_.resize(kSmoothingKernelLen);
+    const float sigma_bins = 2.0f;
+    float norm = 0.0f;
+    for (size_t i = 0; i < kSmoothingKernelLen; ++i)
+    {
+      const float x = static_cast<float>(i);
+      const float w = std::exp(-0.5f * (x * x) / (sigma_bins * sigma_bins));
+      smoothing_kernel_[i] = w;
+      norm += w;
+    }
+    // Normalise kernel to sum to 1
+    for (auto &w : smoothing_kernel_)
+      w /= norm;
+  }
 
   bool SpeechDecoder::setup()
   {
@@ -86,6 +103,12 @@ namespace app
           bandpass_filters_.push_back(std::move(fptr));
         }
 
+        // Initialise 1-ms window buffers
+        prev_window_.clear();
+        curr_window_.assign(num_channels, std::vector<float>(30, 0.0f));
+        sample_idx_in_window_ = 0;
+        sample_rate_hz_ = sample_rate_hz;  // store for later use
+
         feature_pipeline_initialized_ = true;
         spdlog::info("[SpeechDecoder] Feature extractor initialised (channels={} sample_rate={} Hz)", num_channels, sample_rate_hz);
       }
@@ -98,17 +121,11 @@ namespace app
       const size_t channels_per_array = kChannelsPerArray;
       auto get_array_id = [channels_per_array](size_t ch) { return ch / channels_per_array; };
 
-      // Per-channel accumulators
-      std::vector<float> sumsq(num_channels, 0.0f);
-      std::vector<int32_t> thresh_cross_counts(num_channels, 0);
+      // Per-channel accumulators over this 20-ms bin
+      std::vector<float> sumsq(num_channels, 0.0f);              // accumulate mean(square) per 1-ms window
+      std::vector<int32_t> thresh_cross_counts(num_channels, 0); // count threshold crossings across 1-ms windows
 
-      // Track sub-windows of 1 ms (30 samples) to count spikes
-      size_t sample_rate_hz = static_cast<size_t>(broadband_frames.at(0).sample_rate_hz());
-      const size_t samples_per_ms = sample_rate_hz / 1000;
-      size_t subwindow_counter = 0;
-
-      // Storage for per-channel min within current 1-ms subwindow
-      std::vector<float> subwindow_min(num_channels, std::numeric_limits<float>::max());
+      size_t windows_processed = 0; // how many 1-ms windows we have processed in this 20-ms bin
 
       for (size_t idx = 0; idx < frames_in_bin; ++idx)
       {
@@ -129,47 +146,29 @@ namespace app
           array_means[aid] /= static_cast<float>(counts[aid]);
 
         // ------------------------------------------------------------------
-        // For each channel: CAR, filter, accumulate stats
+        // For each channel: CAR (array-wise) and store into current 1-ms window buffer
         for (size_t ch = 0; ch < num_channels; ++ch)
         {
           const float centred = data[ch] - array_means[get_array_id(ch)];
 
-          float filt_sample = centred;
-          if (bandpass_filters_[ch])
-            filt_sample = bandpass_filters_[ch]->filter(centred);
-
-          // For calibration accumulate squares
-          if (!threshold_initialized_)
-          {
-            baseline_accum_[ch] += filt_sample * filt_sample;
-          }
-
-          // For feature extraction this bin
-          sumsq[ch] += filt_sample * filt_sample;
-
-          // track minimum for threshold detection within current subwindow
-          if (filt_sample < subwindow_min[ch])
-            subwindow_min[ch] = filt_sample;
+          // Store into current window buffer
+          curr_window_[ch][sample_idx_in_window_] = centred;
         }
 
-        // Manage subwindow counter
-        subwindow_counter++;
-        if (subwindow_counter >= samples_per_ms)
+        // Advance sample index; when we have 30 samples, process window
+        sample_idx_in_window_++;
+        if (sample_idx_in_window_ >= 30)
         {
-          // Evaluate threshold crossings for this 1-ms window
-          if (threshold_initialized_)
-          {
-            for (size_t ch = 0; ch < num_channels; ++ch)
-            {
-              if (subwindow_min[ch] <= thresholds_uv_[ch])
-                thresh_cross_counts[ch]++;
-            }
-          }
-
-          // Reset for next subwindow
-          std::fill(subwindow_min.begin(), subwindow_min.end(), std::numeric_limits<float>::max());
-          subwindow_counter = 0;
+          process_one_ms_window(sumsq, thresh_cross_counts);
+          windows_processed++;
         }
+      }
+
+      // Make sure we processed exactly 20 windows
+      if (windows_processed == 0)
+      {
+        spdlog::warn("[SpeechDecoder] No 1-ms windows processed in bin – check frame rate/buffer sizes");
+        continue;
       }
 
       // Finish calibration if ready
@@ -182,7 +181,7 @@ namespace app
           for (size_t ch = 0; ch < thresholds_uv_.size(); ++ch)
           {
             float rms = std::sqrt(baseline_accum_[ch] * inv_samples);
-            thresholds_uv_[ch] = -4.0f * rms; // negative threshold
+            thresholds_uv_[ch] = -4.5f * rms; // negative threshold (match Python)
           }
           threshold_initialized_ = true;
           spdlog::info("[SpeechDecoder] Thresholds initialised after {:.2f} s ({} samples)", calibration_seconds_, baseline_sample_counter_);
@@ -193,52 +192,24 @@ namespace app
       std::vector<float> spike_power(num_channels, 0.0f);
       for (size_t ch = 0; ch < num_channels; ++ch)
       {
-        spike_power[ch] = sumsq[ch] / static_cast<float>(frames_in_bin);
-        // Clip to avoid extreme values (match Python 10,000 default)
-        const float spike_power_clip = 10000.0f;
+        spike_power[ch] = sumsq[ch] / static_cast<float>(windows_processed);
+        // Clip to avoid extreme values (match Python 12 500 default)
+        const float spike_power_clip = 12500.0f;
         if (spike_power[ch] > spike_power_clip)
           spike_power[ch] = spike_power_clip;
       }
 
-      // Build feature vector [tx_counts | spike_power]
-      std::vector<float> feature_vec_10ms;
-      feature_vec_10ms.reserve(num_channels * 2);
+      // Build feature vector for this 20-ms bin  [thresholdCounts | spikePower]
+      std::vector<float> feature_vec;
+      feature_vec.reserve(num_channels * 2);
       for (size_t ch = 0; ch < num_channels; ++ch)
-        feature_vec_10ms.push_back(static_cast<float>(thresh_cross_counts[ch]));
+        feature_vec.push_back(static_cast<float>(thresh_cross_counts[ch]));
       for (size_t ch = 0; ch < num_channels; ++ch)
-        feature_vec_10ms.push_back(spike_power[ch]);
+        feature_vec.push_back(spike_power[ch]);
 
-      // ---------------- Bin compression (20-ms) ------------------------------
-      compression_buffer_.push_back(feature_vec_10ms);
-      if (compression_buffer_.size() < kBinCompressionFactor)
-      {
-        // Wait until we have two 10-ms bins collected, then continue loop.
-        continue;
-      }
-
-      // Aggregate counts (sum) and power (mean)
-      std::vector<float> feature_vec(feature_vec_10ms.size(), 0.0f);
-      // Sum across buffer
-      for (const auto &vec : compression_buffer_)
-      {
-        for (size_t i = 0; i < vec.size(); ++i)
-          feature_vec[i] += vec[i];
-      }
-
-      // For spike power part (second half) compute mean, and apply log.
-      const size_t offset_power = num_channels; // index where power starts
-      for (size_t i = offset_power; i < feature_vec.size(); ++i)
-      {
-        feature_vec[i] /= static_cast<float>(kBinCompressionFactor); // mean
-        feature_vec[i] = std::log(feature_vec[i] + 1e-4f);           // log-transform
-      }
-
-      // Clear compression buffer for next cycle
-      compression_buffer_.clear();
-
-      // ---------------- Rolling Z-score Normalisation ------------------------
+      // ---------------- Normalisation ---------------------------------------
       feature_window_.push_back(feature_vec);
-      if (feature_window_.size() > kRollingWindowBins)
+      if (feature_window_.size() > kNormWindowBins)
         feature_window_.pop_front();
 
       std::vector<float> mean(feature_vec.size(), 0.0f);
@@ -268,24 +239,54 @@ namespace app
           stddev[i] = 1e-4f;
       }
 
+      std::vector<float> zscored_vec(feature_vec.size());
       for (size_t i = 0; i < feature_vec.size(); ++i)
       {
-        feature_vec[i] = (feature_vec[i] - mean[i]) / stddev[i];
-        if (feature_vec[i] > zscore_clip_)
-          feature_vec[i] = zscore_clip_;
-        else if (feature_vec[i] < -zscore_clip_)
-          feature_vec[i] = -zscore_clip_;
+        float val = (feature_vec[i] - mean[i]) / stddev[i];
+        if (val > zscore_clip_)
+          val = zscore_clip_;
+        else if (val < -zscore_clip_)
+          val = -zscore_clip_;
+        zscored_vec[i] = val;
       }
+
+      // ---------------- Causal Gaussian smoothing ---------------------------
+      smoothing_buffer_.push_back(zscored_vec);
+      if (smoothing_buffer_.size() > kSmoothingKernelLen)
+        smoothing_buffer_.pop_front();
+
+      std::vector<float> smoothed_vec(zscored_vec.size(), 0.0f);
+      float weight_sum = 0.0f;
+      // Iterate over buffer from newest (idx 0) to oldest, matching kernel
+      size_t w_idx = 0;
+      for (auto it = smoothing_buffer_.rbegin(); it != smoothing_buffer_.rend() && w_idx < smoothing_kernel_.size(); ++it, ++w_idx)
+      {
+        const auto &vec = *it;
+        float w = smoothing_kernel_[w_idx];
+        weight_sum += w;
+        for (size_t i = 0; i < vec.size(); ++i)
+          smoothed_vec[i] += w * vec[i];
+      }
+      if (weight_sum > 0.0f)
+      {
+        for (auto &v : smoothed_vec)
+          v /= weight_sum;
+      }
+
+      // ---------------- Rolling Z-score Normalisation ------------------------
+      // --------------------------------------------------------------------
+
+      const std::vector<float> &output_vec = smoothed_vec; // final features
 
       // Publish tensor -----------------------------------------------------
       synapse::Tensor features_tensor;
-      const std::array<int32_t, 1> feature_shape = {static_cast<int32_t>(feature_vec.size())};
+      const std::array<int32_t, 1> feature_shape = {static_cast<int32_t>(output_vec.size())};
       features_tensor.mutable_shape()->Add(feature_shape.begin(), feature_shape.end());
       features_tensor.set_dtype(synapse::Tensor_DType_DT_FLOAT);
       features_tensor.set_endianness(synapse::Tensor_Endianness_TENSOR_LITTLE_ENDIAN);
 
-      const char *feat_ptr = reinterpret_cast<const char *>(feature_vec.data());
-      size_t feat_size = feature_vec.size() * sizeof(float);
+      const char *feat_ptr = reinterpret_cast<const char *>(output_vec.data());
+      size_t feat_size = output_vec.size() * sizeof(float);
       features_tensor.set_data(std::string(feat_ptr, feat_size));
       features_tensor.set_timestamp_ns(loop_start_ns.count());
 
@@ -318,6 +319,17 @@ namespace app
       }
 
       // Housekeeping -----------------------------------------------------------
+      // Update threshold refresh counter
+      bins_since_threshold_refresh_++;
+      if (bins_since_threshold_refresh_ >= kThresholdRefreshBins)
+      {
+        spdlog::info("[SpeechDecoder] Re-calibrating thresholds after refresh interval");
+        threshold_initialized_ = false;
+        std::fill(baseline_accum_.begin(), baseline_accum_.end(), 0.0f);
+        baseline_sample_counter_ = 0;
+        bins_since_threshold_refresh_ = 0;
+      }
+
       const auto loop_dt_ns = synapse::get_steady_clock_now() - loop_start_ns;
       spdlog::debug("[SpeechDecoder] Loop latency: {} ms", loop_dt_ns.count() * 1e-6);
     }
@@ -387,6 +399,91 @@ namespace app
   {
     const auto expected = last_seq + 1;
     return static_cast<int>(current_seq - expected);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Helper: process a filled 1-ms (30-sample) window with zero-phase filtering
+  // ---------------------------------------------------------------------------
+  void SpeechDecoder::process_one_ms_window(std::vector<float>& sumsq, std::vector<int32_t>& thresh_cross_counts)
+  {
+    const size_t num_channels = curr_window_.size();
+    if (num_channels == 0) return;
+
+    const size_t n_samples = 30;               // 1 ms @ 30 kHz
+    const size_t right_pad = 36;               // 1.2 ms mean padding
+
+    for (size_t ch = 0; ch < num_channels; ++ch)
+    {
+      // Build padded buffer: prev 30 + curr 30 + mean pad 36
+      std::vector<float> padded;
+      padded.reserve(n_samples * 2 + right_pad);
+
+      // Append previous window (if not yet initialised, use zeros)
+      if (!prev_window_.empty())
+        padded.insert(padded.end(), prev_window_[ch].begin(), prev_window_[ch].end());
+      else
+        padded.insert(padded.end(), n_samples, 0.0f);
+
+      // Append current window samples
+      padded.insert(padded.end(), curr_window_[ch].begin(), curr_window_[ch].end());
+
+      // Mean pad
+      float mean_val = std::accumulate(curr_window_[ch].begin(), curr_window_[ch].end(), 0.0f) / static_cast<float>(n_samples);
+      padded.insert(padded.end(), right_pad, mean_val);
+
+      // Forward filter
+      auto fwd_filter = synapse::create_bandpass_filter<kFilterOrder>(sample_rate_hz_, low_cut_hz_, high_cut_hz_);
+      std::vector<float> fwd_out(padded.size());
+      for (size_t i = 0; i < padded.size(); ++i)
+        fwd_out[i] = fwd_filter->filter(padded[i]);
+
+      // Reverse filter
+      auto rev_filter = synapse::create_bandpass_filter<kFilterOrder>(sample_rate_hz_, low_cut_hz_, high_cut_hz_);
+      std::vector<float> rev_out(fwd_out.size());
+      for (size_t i = 0; i < fwd_out.size(); ++i)
+        rev_out[i] = rev_filter->filter(fwd_out[fwd_out.size() - 1 - i]);
+
+      // Reverse back to forward order
+      std::reverse(rev_out.begin(), rev_out.end());
+
+      // Extract the 30 samples corresponding to curr window (indices 30..59)
+      float min_val = std::numeric_limits<float>::max();
+      float sum_sq_channel = 0.0f;
+      const size_t start_idx = n_samples; // 30
+      for (size_t i = 0; i < n_samples; ++i)
+      {
+        float sample = rev_out[start_idx + i];
+        sum_sq_channel += sample * sample;
+        if (sample < min_val) min_val = sample;
+      }
+
+      // Update accumulators
+      sumsq[ch] += sum_sq_channel / static_cast<float>(n_samples); // mean square later scaled outside
+
+      if (threshold_initialized_ && min_val <= thresholds_uv_[ch])
+        thresh_cross_counts[ch]++;
+
+      if (!threshold_initialized_)
+      {
+        baseline_accum_[ch] += sum_sq_channel;
+      }
+    }
+
+    // After processing, move curr to prev and reset index
+    if (prev_window_.empty())
+    {
+      prev_window_ = curr_window_;
+    }
+    else
+    {
+      prev_window_.swap(curr_window_);
+    }
+    // Clear curr_window_ for next fill
+    for (auto &vec : curr_window_)
+      std::fill(vec.begin(), vec.end(), 0.0f);
+
+    sample_idx_in_window_ = 0;
+    baseline_sample_counter_ += n_samples; // keep calibration sample count
   }
 
 } // namespace app
