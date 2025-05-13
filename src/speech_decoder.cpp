@@ -34,6 +34,8 @@ namespace app
     // Normalise kernel to sum to 1
     for (auto &w : smoothing_kernel_)
       w /= norm;
+
+    stride_bins_counter_ = 0; // initialize RNN patch stride counter
   }
 
   bool SpeechDecoder::setup()
@@ -276,23 +278,41 @@ namespace app
       // ---------------- Rolling Z-score Normalisation ------------------------
       // --------------------------------------------------------------------
 
-      const std::vector<float> &output_vec = smoothed_vec; // final features
+      // Add this smoothed 20-ms bin to patch window
+      patch_window_.push_back(smoothed_vec);
+      if (patch_window_.size() > kPatchSizeBins)
+        patch_window_.pop_front();
 
-      // Publish tensor -----------------------------------------------------
-      synapse::Tensor features_tensor;
-      const std::array<int32_t, 1> feature_shape = {static_cast<int32_t>(output_vec.size())};
-      features_tensor.mutable_shape()->Add(feature_shape.begin(), feature_shape.end());
-      features_tensor.set_dtype(synapse::Tensor_DType_DT_FLOAT);
-      features_tensor.set_endianness(synapse::Tensor_Endianness_TENSOR_LITTLE_ENDIAN);
-
-      const char *feat_ptr = reinterpret_cast<const char *>(output_vec.data());
-      size_t feat_size = output_vec.size() * sizeof(float);
-      features_tensor.set_data(std::string(feat_ptr, feat_size));
-      features_tensor.set_timestamp_ns(loop_start_ns.count());
-
-      if (!publish_tap("features_out", features_tensor))
+      if (patch_window_.size() == kPatchSizeBins)
       {
-        spdlog::warn("[SpeechDecoder] Failed to publish features_out");
+        stride_bins_counter_++;
+        if (stride_bins_counter_ >= kPatchStrideBins)
+        {
+          stride_bins_counter_ = 0;
+
+          // Flatten 14×512 to contiguous vector
+          std::vector<float> patch;
+          patch.reserve(kPatchSizeBins * smoothed_vec.size());
+          for (const auto &v : patch_window_)
+            patch.insert(patch.end(), v.begin(), v.end());
+
+          // Publish tensor -------------------------------------------------
+          synapse::Tensor features_tensor;
+          const std::array<int32_t, 2> feature_shape = {static_cast<int32_t>(kPatchSizeBins), static_cast<int32_t>(smoothed_vec.size())};
+          features_tensor.mutable_shape()->Add(feature_shape.begin(), feature_shape.end());
+          features_tensor.set_dtype(synapse::Tensor_DType_DT_FLOAT);
+          features_tensor.set_endianness(synapse::Tensor_Endianness_TENSOR_LITTLE_ENDIAN);
+
+          const char *ptr = reinterpret_cast<const char *>(patch.data());
+          size_t bytes = patch.size() * sizeof(float);
+          features_tensor.set_data(std::string(ptr, bytes));
+          features_tensor.set_timestamp_ns(loop_start_ns.count());
+
+          if (!publish_tap("features_out", features_tensor))
+          {
+            spdlog::warn("[SpeechDecoder] Failed to publish features_out");
+          }
+        }
       }
 
       // -------------------------------------------------------------------------
