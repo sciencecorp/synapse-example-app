@@ -44,7 +44,7 @@ namespace app
     synapse::Timer publish_rate_limiter_;
 
     // --- Parameters --------------------------------------------------------
-    const float bin_size_ms_ = 10.0f; // Assumed bin size for now (will match feature extractor)
+    const float bin_size_ms_ = 20.0f; // 20-ms bins to match Python pipeline
 
     bool threshold_initialized_ = false; // have we computed per-channel thresholds?
 
@@ -69,14 +69,31 @@ namespace app
     static constexpr size_t kChannelsPerArray = 64;
     static constexpr size_t kNumArrays       = 4;
 
-    // Rolling z-score window ---------------------------------------------------
-    static constexpr size_t kRollingWindowBins = 5; // 5 compressed bins (~100 ms)
-    std::deque<std::vector<float>> feature_window_;
+    // Rolling z-score & smoothing ---------------------------------------------
+    static constexpr size_t kNormWindowBins = 200; // ≈4 s of data @20 ms/bin
+    std::deque<std::vector<float>> feature_window_; // stores last kNormWindowBins raw feature vectors (pre-z-score)
+
+    // Causal Gaussian smoothing (σ = 2 bins, kernel length 15, 160 ms lag)
+    static constexpr size_t kSmoothingKernelLen = 15;
+    std::vector<float> smoothing_kernel_;
+    std::deque<std::vector<float>> smoothing_buffer_;
+
+    // Buffers for 1-ms zero-phase filtering ----------------------------------
+    std::vector<std::vector<float>> prev_window_;   // last 30 centred samples per channel
+    std::vector<std::vector<float>> curr_window_;   // accumulating current 30 samples
+    size_t sample_idx_in_window_ = 0;
+
     const float zscore_clip_ = 10.0f;
 
-    // Bin compression (aggregate two 10-ms bins into one 20-ms step)
-    static constexpr size_t kBinCompressionFactor = 2;
-    std::vector<std::vector<float>> compression_buffer_;
+    // Threshold refresh --------------------------------------------------------
+    size_t bins_since_threshold_refresh_ = 0;
+    static constexpr size_t kThresholdRefreshBins = 60000; // refresh thresholds roughly every 20 min
+
+    // Sample rate (Hz) determined at runtime
+    float sample_rate_hz_ = 30000.0f;
+
+    // Process a filled 1-ms window (called when curr_window_ is full)
+    void process_one_ms_window(std::vector<float>& sumsq, std::vector<int32_t>& thresh_cross_counts);
   };
 } // namespace app
 
