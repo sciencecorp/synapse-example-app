@@ -42,7 +42,7 @@ endif()
 message(STATUS "SYNAPSE_APP_SDK_LIB: ${SYNAPSE_APP_SDK_LIB}")
 
 add_executable(synapse-example-app
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/fixed_weight_decoder.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/speech_decoder.cpp
 )
 
 generate_protobufs(
