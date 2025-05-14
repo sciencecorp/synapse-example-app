@@ -1,0 +1,1 @@
+This project contains example code that will read from a tap exposed by the example-app. The neural features from the tap are then passed through a 5 layer RNN decoder to predict phonemes.
