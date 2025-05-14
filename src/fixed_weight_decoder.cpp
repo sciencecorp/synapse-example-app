@@ -32,6 +32,13 @@ namespace app
       spdlog::warn("Failed to create tap for joystick out");
       return false;
     }
+
+    // Enable performance monitoring
+    function_profiler_manager_.add("detect_spikes");
+    function_profiler_manager_.add("end_to_end");
+    if (!enable_function_profiling(std::chrono::seconds(1))) {
+        return false;
+    }
     return true;
   }
 
@@ -49,6 +56,8 @@ namespace app
         // No frames just go wait again
         continue;
       }
+      // Start our main loop profiler
+      start_profile("end_to_end");
 
       // Keep track of how long processing takes
       const auto start_of_loop_ns = synapse::get_steady_clock_now();
@@ -106,8 +115,10 @@ namespace app
 
             // Pass the filtered data to the spike detector along with the frame timestamp
             // The detector handles the rest internally
+            start_profile("detect_spikes");
             synapse::SpikeEvent *spike_event =
                 spike_detector->detect(filtered_data, frame_timestamp_ns, channel_id);
+            stop_profile("detect_spikes");
 
             if (spike_event != nullptr)
             {
@@ -188,6 +199,8 @@ namespace app
 
       // Then, send off your data using the publisher you configured earlier
       // In this demo, we use a ZMQ publisher over tcp
+      stop_profile("end_to_end");
+
       if (publish_rate_limiter_.reset_if_elapsed())
       {
         if (publish_tap("joystick_out", output_tensor))
