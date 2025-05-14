@@ -50,7 +50,7 @@ First, make sure you have the latest version of [synapsectl](https://github.com/
 ### Download Synapse Example App
 Next, clone or fork [synapse-example-app](https://github.com/sciencecorp/synapse-example-app).
 
- - `git clone git@github.com:sciencecorp/synapse-example-app.git`
+ - `git clone git@github.com:sciencecorp/synapse-example-app.git` && cd synapse-example-app
  - `git submodule update --init --recursive`
 
 ### Building Your App
