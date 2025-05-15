@@ -85,7 +85,7 @@ RUN cd ${VCPKG_ROOT} && \
 
 # Set up and install our synapse SDK package
 # Make sure we have science keys
-ARG SDK_VERSION=0.2.4
+ARG SDK_VERSION=0.3.0
 COPY ops/keys/science-repo-public.asc /usr/share/keyrings/scifi-repo-science-public.asc
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates && \
