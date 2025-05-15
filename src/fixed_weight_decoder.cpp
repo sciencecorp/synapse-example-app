@@ -50,6 +50,8 @@ namespace app
         continue;
       }
 
+      spdlog::info("Before filter init");
+
       // Keep track of how long processing takes
       const auto start_of_loop_ns = synapse::get_steady_clock_now();
 
@@ -225,6 +227,7 @@ namespace app
     uint64_t first_timestamp_ns = 0;
 
     // TODO: We should consider having a timeout here
+    spdlog::info("before while loop wait for frames: {}", bin_size_ms);
     while (node_running_)
     {
       // In this example, we are listening to BroadbandFrame data
@@ -240,6 +243,7 @@ namespace app
       }
 
       // Reserve space for these frames
+      spdlog::info("Got frames: {}", frames.size());
       frames.reserve(frames.size() + messages.size());
 
       // Process each received message in this multipart

@@ -75,15 +75,31 @@ namespace app
       {
         continue; // try again
       }
-
       const auto loop_start_ns = synapse::get_steady_clock_now();
+
 
       // -------------------------------------------------------------------------
       // Initialise feature-extraction pipeline on first pass --------------------
       if (!feature_pipeline_initialized_)
       {
-        const size_t num_channels = broadband_frames.at(0).frame_data_size();
-        const float sample_rate_hz = broadband_frames.at(0).sample_rate_hz();
+        auto& first_frame = broadband_frames.at(0);
+        spdlog::info("Broadband 0: {}: {}", first_frame.DebugString(), first_frame.frame_data_size());
+        if (first_frame.frame_data_size() < 256) {
+
+          spdlog::error("Not equal to 256");
+          for (auto& frame : broadband_frames) {
+            // Calculate how many elements to add
+            int padding_count = 256 - frame.frame_data_size();
+            
+            // Add padding elements (assuming frame_data contains numeric values)
+            for (int i = 0; i < padding_count; i++) {
+              frame.add_frame_data(0); // Add zeros or appropriate default value
+            }
+          }
+
+        }
+        const size_t num_channels = 256; //broadband_frames.at(0).frame_data_size();
+        const float sample_rate_hz = 30000; //broadband_frames.at(0).sample_rate_hz();
 
         // Configure calibration sample threshold
         calibration_required_samples_ = static_cast<size_t>(calibration_seconds_ * sample_rate_hz);
@@ -116,6 +132,20 @@ namespace app
       }
 
       // --------- Feature computation over this bin ----------------------------
+              auto& first_frame = broadband_frames.at(0);
+        if (first_frame.frame_data_size() < 256) {
+
+          for (auto& frame : broadband_frames) {
+            // Calculate how many elements to add
+            int padding_count = 256 - frame.frame_data_size();
+            
+            // Add padding elements (assuming frame_data contains numeric values)
+            for (int i = 0; i < padding_count; i++) {
+              frame.add_frame_data(0); // Add zeros or appropriate default value
+            }
+          }
+
+        }
       const size_t num_channels = broadband_frames.at(0).frame_data_size();
       const size_t frames_in_bin = broadband_frames.size();
 
@@ -128,7 +158,7 @@ namespace app
       std::vector<int32_t> thresh_cross_counts(num_channels, 0); // count threshold crossings across 1-ms windows
 
       size_t windows_processed = 0; // how many 1-ms windows we have processed in this 20-ms bin
-
+  
       for (size_t idx = 0; idx < frames_in_bin; ++idx)
       {
         const auto &frame = broadband_frames[idx];
@@ -136,23 +166,30 @@ namespace app
 
         // ------------------------------------------------------------------
         // Compute array-wise mean for CAR
-        float array_means[kNumArrays] = {0};
-        size_t counts[kNumArrays] = {0};
-        for (size_t ch = 0; ch < num_channels; ++ch)
-        {
-          size_t aid = get_array_id(ch);
-          array_means[aid] += data[ch];
-          counts[aid]++;
-        }
-        for (size_t aid = 0; aid < kNumArrays; ++aid)
-          array_means[aid] /= static_cast<float>(counts[aid]);
+        // float array_means[kNumArrays] = {0};
+        // size_t counts[kNumArrays] = {0};
+        // for (size_t ch = 0; ch < num_channels; ++ch)
+        // {
+        //   size_t aid = get_array_id(ch);
+        //   array_means[aid] += data[ch];
+        //   counts[aid]++;
+        // }
+        // for (size_t aid = 0; aid < kNumArrays; ++aid) {
+        //   const auto value_aid = static_cast<float>(counts[aid]);
+        //   if (value_aid == 0.0 || std::isnan(value_aid)) {
+        //     array_means[aid] /= 0.01;
+        //   } else {
+        //     array_means[aid] /= static_cast<float>(counts[aid]);
+        //   }
+
+        // }
 
         // ------------------------------------------------------------------
         // For each channel: CAR (array-wise) and store into current 1-ms window buffer
         for (size_t ch = 0; ch < num_channels; ++ch)
         {
-          const float centred = data[ch] - array_means[get_array_id(ch)];
-
+          //const float centred = data[ch] - array_means[get_array_id(ch)];
+          const float centred = data[ch];
           // Store into current window buffer
           curr_window_[ch][sample_idx_in_window_] = centred;
         }
@@ -165,6 +202,7 @@ namespace app
           windows_processed++;
         }
       }
+
 
       // Make sure we processed exactly 20 windows
       if (windows_processed == 0)
@@ -216,7 +254,6 @@ namespace app
 
       std::vector<float> mean(feature_vec.size(), 0.0f);
       std::vector<float> stddev(feature_vec.size(), 0.0f);
-
       for (const auto &win_vec : feature_window_)
       {
         for (size_t i = 0; i < win_vec.size(); ++i)
@@ -271,8 +308,9 @@ namespace app
       }
       if (weight_sum > 0.0f)
       {
-        for (auto &v : smoothed_vec)
+        for (auto &v : smoothed_vec) {
           v /= weight_sum;
+        }
       }
 
       // ---------------- Rolling Z-score Normalisation ------------------------
@@ -360,6 +398,8 @@ namespace app
   // ---------------------------------------------------------------------------
   bool SpeechDecoder::wait_for_frames(std::vector<synapse::BroadbandFrame> &frames, float bin_size_ms)
   {
+    int target_frames = 600;
+
     if (bin_size_ms <= 0)
     {
       spdlog::warn("[SpeechDecoder] Invalid bin size: {} ms", bin_size_ms);
@@ -407,8 +447,13 @@ namespace app
         frames.push_back(frame);
       }
 
+      //spdlog::info("Waiting from frames: frames.back().timestamp_ns(): {}, first_timestamp_ns: {} target_bin: {}", frames.back().timestamp_ns(), first_timestamp_ns,target_bin_ns );
       if (!frames.empty() && (frames.back().timestamp_ns() - first_timestamp_ns >= target_bin_ns))
       {
+        return true;
+      }
+
+      if (frames.size() >= target_frames) {
         return true;
       }
     }
