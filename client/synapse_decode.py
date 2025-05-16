@@ -25,19 +25,18 @@ from synapse.api.datatype_pb2 import Tensor
 # Index 0 is the CTC "blank" token and index 1 is a silence marker (SIL).
 # -----------------------------------------------------------------------------
 LOGIT_PHONE_DEF = [
-    'BLANK', 'SIL',
     'AA', 'AE', 'AH', 'AO', 'AW',
     'AY', 'B',  'CH', 'D', 'DH',
     'EH', 'ER', 'EY', 'F', 'G',
-    '_H', 'IH', 'IY', 'J', 'K',
-    'L', 'M', 'N', 'NX', 'OW',
+    'HH', 'IH', 'IY', 'JH', 'K',
+    'L', 'M', 'N', 'NG', 'OW',
     'OY', 'P', 'R', 'S', 'SH',
     'T', 'TH', 'UH', 'UW', 'V',
-    'W', 'Y', 'Z', 'ZH'
+    'W', 'Y', 'Z', 'ZH', 'SIL'
 ]
 
 
-def decode_logits_to_phonemes(logits):
+def decode_logits_to_phonemes(logits: torch.Tensor) -> List[str]:
     """Greedy CTC-style decoding of model logits to a phoneme sequence.
 
     Args:
@@ -48,7 +47,6 @@ def decode_logits_to_phonemes(logits):
     """
     # Convert logits → class index for each timestep.
     pred_indices = logits.argmax(dim=-1).squeeze(0).cpu().tolist()
-
     # Collapse repeats and drop BLANK (index 0).
     phoneme_seq = []
     prev_idx = None
@@ -198,10 +196,9 @@ class SynappClient(object):
             syn_tensor = Tensor()
             syn_tensor.ParseFromString(newbytes)
             tensor_folded = torch.frombuffer(bytearray(syn_tensor.data), dtype=torch.float32)
-            tensor = tensor_folded.view(syn_tensor.shape[0], syn_tensor.shape[1])
+            in_features = tensor_folded.view(syn_tensor.shape[0], syn_tensor.shape[1])
 
 
-            in_features = tensor
             start = time.time()
             logits = self.model(x = in_features.unsqueeze(0).to(self.device), day_idx = torch.tensor([self.n_day_layers - 1]).to(self.device)) 
             end = time.time()
