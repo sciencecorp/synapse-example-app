@@ -56,14 +56,15 @@ def decode_logits_to_phonemes(logits: torch.Tensor) -> List[str]:
         prev_idx = idx
         if idx == 0:  # BLANK
             continue
-        phoneme_seq.append(LOGIT_PHONE_DEF[idx])
+        phoneme_seq.append(LOGIT_PHONE_DEF[idx-1])
     return phoneme_seq
 
 class SynappClient(object):
-    def __init__(self, model, device, tap):
+    def __init__(self, model, device, tap, verbose: bool = False):
         self.model = model
         self.device = device
         self.tap = tap
+        self.verbose = verbose
 
         self.new_feature_period = 4
         self.feature_window_len = 14
@@ -210,14 +211,15 @@ class SynappClient(object):
             if group_process_time < self.min_group_time:
                 self.min_group_time = group_process_time
 
-            # print("Time taken for model inference: ", end - start)
-            # print("Time to gather and process features: ", group_process_time)
-            self.tot_group_time += group_process_time
-            # print("Avg time per group (4 bins): ", self.tot_group_time / tot_groups)
-            # print("Max time per group (4 bins): ", self.max_group_time)
-            # print("Min time per group (4 bins): ", self.min_group_time)
-            group_start_time = time.time()
-            # print("Logits:", logits.shape, logits)
+            if self.verbose:
+                print("Time taken for model inference: ", end - start)
+                print("Time to gather and process features: ", group_process_time)
+                self.tot_group_time += group_process_time
+                print("Avg time per group (4 bins): ", self.tot_group_time / tot_groups)
+                print("Max time per group (4 bins): ", self.max_group_time)
+                print("Min time per group (4 bins): ", self.min_group_time)
+                group_start_time = time.time()
+                print("Logits:", logits.shape, logits)
 
             # Decode logits to a sequence of phoneme guesses
             phoneme_sequence = decode_logits_to_phonemes(logits)
@@ -275,6 +277,8 @@ def parse_args():
                         help="IP address of the Synapse device")
     parser.add_argument("--tap-name", type=str, required=True,
                         help="Name of the tap to connect to")
+    parser.add_argument("--verbose", action='store_true',
+                        help="Enable verbose output")
     args = parser.parse_args()
     
     # Validate model path
@@ -293,7 +297,7 @@ def main():
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
-    client_app = SynappClient(model, device, dev_tap)
+    client_app = SynappClient(model, device, dev_tap, verbose=args.verbose)
 
     try:
         client_app.run()
