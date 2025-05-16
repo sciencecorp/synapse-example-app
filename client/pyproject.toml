@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "omegaconf>=2.3.0",
-    "science-synapse>=2.2.0",
+    "science-synapse>=2.2.4",
+    "sounddevice>=0.5.1",
     "torch>=2.7.0",
 ]
