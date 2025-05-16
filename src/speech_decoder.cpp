@@ -54,12 +54,6 @@ namespace app
       return false;
     }
 
-    if (!create_tap<synapse::Tensor>("phonemes_out"))
-    {
-      spdlog::error("[SpeechDecoder] Failed to create 'phonemes_out' tap");
-      return false;
-    }
-
     return true;
   }
 
@@ -370,10 +364,10 @@ namespace app
         phoneme_tensor.set_data(std::string(phon_ptr, phon_size));
         phoneme_tensor.set_timestamp_ns(loop_start_ns.count());
 
-        if (!publish_tap("phonemes_out", phoneme_tensor))
-        {
-          spdlog::warn("[SpeechDecoder] Failed to publish phonemes_out");
-        }
+        // if (!publish_tap("phonemes_out", phoneme_tensor))
+        // {
+        //   spdlog::warn("[SpeechDecoder] Failed to publish phonemes_out");
+        // }
       }
 
       // Housekeeping -----------------------------------------------------------
