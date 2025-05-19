@@ -1,11 +1,13 @@
 #include "apps/speech_decoder.hpp"
 
-#include <thread>
+#include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <span>
+#include <thread>
 #include <numeric> // accumulate
 #include <limits>
-#include <cmath>
-#include <algorithm>
+#include <vector>
 
 #include <spdlog/spdlog.h>
 #include <synapse-app-sdk/middleware/conversions.hpp>
@@ -97,10 +99,11 @@ void SpeechDecoder::main()
   const size_t channels_per_array = kChannelsPerArray;
   auto get_array_id = [channels_per_array](size_t ch) { return ch / channels_per_array; };
 
-  size_t num_channels = kChannelsPerArray * kNumArrays; // number of channels in the incoming frames
-  size_t frames_to_read = static_cast<size_t>(std::ceil(1 / (1000.0f / sample_rate_hz_)));
+  const size_t num_channels = kChannelsPerArray * kNumArrays; // number of channels in the incoming frames
+  const size_t frames_to_read = static_cast<size_t>(std::ceil(1 / (1000.0f / sample_rate_hz_)));
   calibration_required_samples_ = static_cast<size_t>(calibration_seconds_ * sample_rate_hz_);
 
+  const size_t windows_per_bin = static_cast<size_t>(bin_size_ms_);
 
   // Allocate state vectors
   thresholds_uv_.assign(num_channels, 0.0f);
@@ -124,6 +127,9 @@ void SpeechDecoder::main()
   curr_window_.assign(num_channels, std::vector<float>(30, 0.0f));
   sample_idx_in_window_ = 0;
 
+  std::vector<float> sp_power_feature_bin(num_channels, 0); // 20-ms bin of spike power features
+  std::vector<int16_t> threshold_crossings_feature_bin(num_channels, 0); // 20-ms bin of threshold crossings
+  size_t windows_processed = 0; // how many 1-ms windows we have processed in a 20-ms bin
   spdlog::info("[SpeechDecoder] Reading {} frames per bin ({} ms)", frames_to_read, bin_size_ms_);
   spdlog::info("[SpeechDecoder] Feature extractor initialised (channels={} sample_rate={} Hz)", num_channels, sample_rate_hz);
   while (node_running_) {
@@ -145,79 +151,68 @@ void SpeechDecoder::main()
     // Filter the 1-ms windows of samples
     filter_window(timeseries_window);
 
-    // Per-channel accumulators over this 20-ms bin
-    std::vector<float> sumsq(num_channels, 0.0f);              // accumulate mean(square) per 1-ms window
-    std::vector<int32_t> thresh_cross_counts(num_channels, 0); // count threshold crossings across 1-ms windows
+    // Apply CAR to the filtered 1-ms windows
+    std::vector<std::vector<float>> car_window = apply_car(timeseries_window, kNumArrays, kChannelsPerArray);
 
-    size_t windows_processed = 0; // how many 1-ms windows we have processed in this 20-ms bin
+    // Features for the current 1ms window for all channels:
+    // TODO: figure out when we want to initialize the spike thresholds. 
+    std::vector<float> spike_powers = calc_spike_bandpower(car_window, 12500.0f);
+    std::vector<int16_t> threshold_crossings = calc_threshold_crossings(car_window, thresholds_uv_);
 
-    for (size_t idx = 0; idx < frames_in_bin; ++idx)
-    {
-      const auto &frame = broadband_frames[idx];
-      const auto &data = frame.frame_data();
-
-      // ------------------------------------------------------------------
-      // Compute array-wise mean for CAR
-      float array_means[kNumArrays] = {0};
-      for (size_t ch = 0; ch < num_channels; ++ch)
-      {
-        size_t aid = get_array_id(ch);
-        array_means[aid] += data[ch];
-      }
-      for (size_t aid = 0; aid < kNumArrays; ++aid) {
-        array_means[aid] /= kChannelsPerArray;
-      }
-
-      // ------------------------------------------------------------------
-      // For each channel: CAR (array-wise) and store into current 1-ms window buffer
-      for (size_t ch = 0; ch < num_channels; ++ch)
-      {
-        curr_window_[ch][sample_idx_in_window_] = data[ch] - array_means[get_array_id(ch)];
-      }
-
-      // Advance sample index; when we have 30 samples, process window
-      sample_idx_in_window_++;
-      if (sample_idx_in_window_ >= 30)
-      {
-        process_one_ms_window(sumsq, thresh_cross_counts);
-        windows_processed++;
-      }
-    }
-
-    // Make sure we processed exactly 20 windows
-    if (windows_processed == 0)
-    {
-      spdlog::warn("[SpeechDecoder] No 1-ms windows processed in bin – check frame rate/buffer sizes");
-      continue;
-    }
-
-    // Finish calibration if ready
-    if (!threshold_initialized_)
-    {
-      baseline_sample_counter_ += frames_in_bin;
-      if (baseline_sample_counter_ >= calibration_required_samples_)
-      {
-        const float inv_samples = 1.0f / static_cast<float>(baseline_sample_counter_);
-        for (size_t ch = 0; ch < thresholds_uv_.size(); ++ch)
-        {
-          float rms = std::sqrt(baseline_accum_[ch] * inv_samples);
-          thresholds_uv_[ch] = -4.5f * rms; // negative threshold (match Python)
-        }
-        threshold_initialized_ = true;
-        spdlog::info("[SpeechDecoder] Thresholds initialised after {:.2f} s ({} samples)", calibration_seconds_, baseline_sample_counter_);
-      }
-    }
-
-    // Compute spike power per channel (mean of squares)
-    std::vector<float> spike_power(num_channels, 0.0f);
+    // Update the 20-ms bin of features
     for (size_t ch = 0; ch < num_channels; ++ch)
     {
-      spike_power[ch] = sumsq[ch] / static_cast<float>(windows_processed);
-      // Clip to avoid extreme values (match Python 12 500 default)
-      const float spike_power_clip = 12500.0f;
-      if (spike_power[ch] > spike_power_clip)
-        spike_power[ch] = spike_power_clip;
+      sp_power_feature_bin[ch] += spike_powers[ch];
+      threshold_crossings_feature_bin[ch] += threshold_crossings[ch];
     }
+    windows_processed++;
+
+    if (windows_processed >= windows_per_bin) {
+      // Average the spike power features for the whole bin
+      for (size_t ch = 0; ch < num_channels; ++ch) {
+        sp_power_feature_bin[ch] /= static_cast<float>(windows_per_bin);
+      }
+
+      std::vector<float> combined_features;
+      combined_features.reserve(num_channels * 2);
+      combined_features.insert(combined_features.end(), threshold_crossings_feature_bin.begin(), threshold_crossings_feature_bin.end());
+      combined_features.insert(combined_features.end(), sp_power_feature_bin.begin(), sp_power_feature_bin.end());
+      // The unnormalized features for one 20ms bin are finished at this point.
+    }
+
+
+
+    // Finish calibration if ready
+    // if (!threshold_initialized_)
+    // {
+    //   baseline_sample_counter_ += frames_in_bin;
+    //   if (baseline_sample_counter_ >= calibration_required_samples_)
+    //   {
+    //     const float inv_samples = 1.0f / static_cast<float>(baseline_sample_counter_);
+    //     for (size_t ch = 0; ch < thresholds_uv_.size(); ++ch)
+    //     {
+    //       float rms = std::sqrt(baseline_accum_[ch] * inv_samples);
+    //       thresholds_uv_[ch] = -4.5f * rms; // negative threshold (match Python)
+    //     }
+    //     threshold_initialized_ = true;
+    //     spdlog::info("[SpeechDecoder] Thresholds initialised after {:.2f} s ({} samples)", calibration_seconds_, baseline_sample_counter_);
+    //   }
+    // }
+
+
+    // Now we apply the data pre-processing for blocks of features going into the RNN decoder
+
+    // 1. Wait for 80ms of new features (4 bins). Buffer the last 14 bins of features.
+
+    // 2. Compute the mean and stddev of the last 14 bins of features. 
+    // Hmm actually the supplemental info states that mean and stddev were calculated based on 
+    // "speech epochs of the previous 20 trials". Its not totally clear what one trial is. 
+    // Im pretty sure its one attempt to reproduce a sentance.
+    // So in practice this will probably be a value that is loaded from a config. 
+
+    // 3. Z-score normalise the features using the mean and stddev of the last 14 bins.
+
+    // 4. Apply a causal Gaussian smoothing kernel to the z-scored features.
 
     // Build feature vector for this 20-ms bin  [thresholdCounts | spikePower]
     std::vector<float> feature_vec;
@@ -500,15 +495,85 @@ void SpeechDecoder::filter_window(std::vector<std::vector<int32_t>>& ms_window) 
 }
 
   
-std::vector<std::vector<float>> apply_car(const std::vector<std::vector<int32_t>> &ms_window, const int32_t& n_arrays, const int32_t& n_channels_per_array) {
+std::vector<std::vector<float>> SpeechDecoder::apply_car(const std::vector<std::vector<int32_t>> &ms_window, const size_t& n_arrays, const size_t& n_channels_per_array) {
   if (ms_window.empty()) {
     return {};
   }
 
-  if (n_arrays <= 0 || n_channels_per_array <= 0) {
-    throw std::invalid_argument("Number of arrays and channels per array must be positive.");
+  const size_t num_channels = ms_window.size();
+  const size_t num_frames = ms_window[0].size();
+  std::vector<std::vector<float>> car_window(num_channels, std::vector<float>(num_frames, 0.0f));  
+  for (size_t array_i = 0; array_i < n_arrays; array_i++) {
+
+    std::span<const std::vector<int32_t>> this_array_input(ms_window.begin() + (array_i * n_channels_per_array), n_channels_per_array );
+    std::span<std::vector<float>> this_array_output(car_window.begin() + (array_i * n_channels_per_array), n_channels_per_array );
+
+    // compute the mean reference signal for this array
+    std::vector<float> array_mean_ref(num_frames, 0.0f);
+    for (size_t fr_idx = 0; fr_idx < num_frames; fr_idx++) {
+      for (size_t ch_idx = 0; ch_idx < n_channels_per_array; ch_idx++) {
+        array_mean_ref[fr_idx] += this_array_input[ch_idx][fr_idx];
+      }
+      array_mean_ref[fr_idx] /= n_channels_per_array;
+    }
+    // subtract the mean reference signal from each channel
+    for (size_t ch_idx = 0; ch_idx < n_channels_per_array; ch_idx++) {
+      for (size_t fr_idx = 0; fr_idx < num_frames; fr_idx++) {
+        this_array_output[ch_idx][fr_idx] = this_array_input[ch_idx][fr_idx] - array_mean_ref[fr_idx];
+      }
+    }
   }
-  
+
+  return car_window;
+}
+
+std::vector<float> SpeechDecoder::calc_spike_bandpower(const std::vector<std::vector<float>> &data, const float& clip_thresh) {
+  const size_t num_channels = data.size();
+  const size_t num_samples = data[0].size();
+
+  std::vector<float> bandpower(num_channels, 0.0f);
+  for (size_t ch = 0; ch < num_channels; ++ch) {
+    float sum_sq = 0.0f;
+    for (size_t i = 0; i < num_samples; ++i) {
+      const float& sample = data[ch][i];
+      sum_sq += sample * sample;
+    }
+    bandpower[ch] = std::min(sum_sq / static_cast<float>(num_samples), clip_thresh);
+  }
+
+  return bandpower;
+}
+
+std::vector<int16_t> calc_threshold_crossings(const std::vector<std::vector<float>> &data, const std::vector<float> &thresholds) {
+  const size_t num_channels = data.size();
+  const size_t num_samples = data[0].size();
+
+  std::vector<int16_t> threshold_crossings(num_channels, 0);
+  for (size_t ch = 0; ch < num_channels; ++ch) {
+    const float& min_sample = *std::min_element(data[ch].begin(), data[ch].end());
+    if (min_sample <= thresholds[ch]) {
+      threshold_crossings[ch]++;
+    }
+  }
+  return threshold_crossings;
+}
+
+std::vector<float> SpeechDecoder::compute_thresholds(const std::vector<std::vector<int32_t>> &data, const float& thresh_mult) {
+  const size_t num_channels = data.size();
+  const size_t num_samples = data[0].size();
+
+  std::vector<float> thresholds(num_channels, 0.0f);
+  // Compute the RMS for each channel and set the threshold based on the multiplier.
+  for (size_t ch = 0; ch < num_channels; ++ch) {
+    double sum_sq = 0.0f;
+    for (size_t i = 0; i < num_samples; ++i) {
+      const float& sample = data[ch][i];
+      sum_sq += sample * sample;
+    }
+    float rms = std::sqrt(sum_sq / static_cast<float>(num_samples));
+    thresholds[ch] = thresh_mult * rms; 
+  }
+  return thresholds;
 }
 
 // ---------------------------------------------------------------------------

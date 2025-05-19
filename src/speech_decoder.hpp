@@ -36,10 +36,20 @@ namespace app
     bool wait_for_frames(std::vector<synapse::BroadbandFrame> &frames, size_t frames_to_read);
     int detect_dropped_frames(uint64_t last_seq, uint64_t current_seq);
 
+    // Data preprocessing helpers -----------------------------------------------
     void filter_window(std::vector<std::vector<int32_t>> &ms_window);
-    std::vector<std::vector<float>> apply_car(const std::vector<std::vector<int32_t>> &ms_window, const int32_t& n_arrays, const int32_t& n_channels_per_array);
-
     std::vector<int32_t> pad_data(std::vector<int32_t> &data, size_t ch_idx);
+    std::vector<std::vector<float>> apply_car(const std::vector<std::vector<int32_t>> &ms_window, const size_t& n_arrays, const size_t& n_channels_per_array);
+
+    // Feature extraction helpers -------------------------------------------
+    std::vector<float> calc_spike_bandpower(const std::vector<std::vector<float>> &data, const float& clip_thresh);
+    std::vector<int16_t> calc_threshold_crossings(const std::vector<std::vector<float>> &data, const std::vector<float> &thresholds);
+    
+    std::vector<float> compute_thresholds(const std::vector<std::vector<int32_t>> &data, const float& thresh_mult);
+    
+    // Feature normalization helpers -------------------------------------------
+    void normalize_rnn_input_features();
+    
 
     // ----------------------------------------------------------------------
 
@@ -51,6 +61,8 @@ namespace app
 
     // --- Parameters --------------------------------------------------------
     const float bin_size_ms_ = 20.0f; // 20-ms bins to match Python pipeline
+
+    const float spike_power_clip = 50000.0f; 
 
     bool threshold_initialized_ = false; // have we computed per-channel thresholds?
 
@@ -76,6 +88,8 @@ namespace app
     static constexpr size_t kNumArrays       = 4;
 
     // Rolling z-score & smoothing ---------------------------------------------
+    std::vector<float> feature_means_;
+    std::vector<float> feature_stddevs_;
     static constexpr size_t kNormWindowBins = 200; // ≈4 s of data @20 ms/bin
     std::deque<std::vector<float>> feature_window_; // stores last kNormWindowBins raw feature vectors (pre-z-score)
 
