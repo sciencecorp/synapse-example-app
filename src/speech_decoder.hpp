@@ -36,7 +36,8 @@ namespace app
     bool wait_for_frames(std::vector<synapse::BroadbandFrame> &frames, size_t frames_to_read);
     int detect_dropped_frames(uint64_t last_seq, uint64_t current_seq);
 
-    bool filter_window(std::vector<std::vector<float>> &ms_window);
+    void filter_window(std::vector<std::vector<int32_t>> &ms_window);
+    std::vector<std::vector<float>> apply_car(const std::vector<std::vector<int32_t>> &ms_window, const int32_t& n_arrays, const int32_t& n_channels_per_array);
 
     std::vector<int32_t> pad_data(std::vector<int32_t> &data, size_t ch_idx);
 
