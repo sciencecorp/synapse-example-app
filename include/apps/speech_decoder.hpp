@@ -1,16 +1,18 @@
 #pragma once
 
+#include <vector>
+#include <memory>
+#include <deque>
+
 #include <synapse-app-sdk/app/app.hpp>
 #include <synapse-app-sdk/utils/time/time.hpp>
 #include <synapse-app-sdk/middleware/conversions.hpp>
+#include <synapse-app-sdk/dsp/filter/base_filter.hpp>
 #include <synapse-app-sdk/dsp/filter/bandpass.hpp>
 
 #include "api/datatype.pb.h"
 #include "api/nodes/broadband_source.pb.h"
 
-#include <vector>
-#include <memory>
-#include <deque>
 
 namespace app
 {
@@ -31,11 +33,14 @@ namespace app
 
   private:
     // Helpers ---------------------------------------------------------------
-    bool wait_for_frames(std::vector<synapse::BroadbandFrame> &frames, float bin_size_ms);
+    bool wait_for_frames(std::vector<synapse::BroadbandFrame> &frames, size_t frames_to_read);
     int detect_dropped_frames(uint64_t last_seq, uint64_t current_seq);
 
+    bool filter_window(std::vector<std::vector<float>> &ms_window);
+
+    std::vector<int32_t> pad_data(std::vector<int32_t> &data, size_t ch_idx);
+
     // ----------------------------------------------------------------------
-    std::atomic<bool> feature_pipeline_initialized_{false};
 
     // Keep track of last sequence number to detect dropouts
     uint64_t last_sequence_number_ = 0;
@@ -58,7 +63,7 @@ namespace app
     std::vector<std::unique_ptr<synapse::BaseFilter>> bandpass_filters_;
 
     // Parameters ---------------------------------------------------------------
-    const float low_cut_hz_  = 200.0f;
+    const float low_cut_hz_  = 250.0f;
     const float high_cut_hz_ = 5000.0f;
 
     // Calibration duration before thresholds are frozen (seconds)

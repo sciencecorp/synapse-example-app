@@ -1,6 +1,5 @@
 #include "apps/speech_decoder.hpp"
 
-#include <spdlog/spdlog.h>
 #include <thread>
 #include <chrono>
 #include <numeric> // accumulate
@@ -8,7 +7,10 @@
 #include <cmath>
 #include <algorithm>
 
+#include <spdlog/spdlog.h>
 #include <synapse-app-sdk/middleware/conversions.hpp>
+
+#include "api/datatype.pb.h"
 
 namespace app
 {
@@ -63,65 +65,85 @@ namespace app
     return true;
   }
 
+  std::vector<std::vector<int32_t>> frames_to_timeseries(const std::vector<synapse::BroadbandFrame> &frames) {
+    if (frames.empty()) {
+      return {};
+    }
+    const size_t num_channels = frames[0].frame_data().size();
+    const size_t num_frames = frames.size();
+    std::vector<std::vector<float>> timeseries(num_channels);
+    for (size_t i = 0; i < num_channels; ++i) {
+      timeseries[i].reserve(num_frames);
+    }
+    for (const auto &frame : frames) {
+      const auto &data = frame.frame_data();
+      for (size_t ch = 0; ch < num_channels; ++ch) {
+        timeseries[ch].push_back(data[ch]);
+      }
+    }
+    return timeseries;
+  }
+
   void SpeechDecoder::main()
   {
+    size_t loop_count = 0;
+    uint64_t tot_loop_time_us = 0;
+    uint64_t tot_read_time_us = 0;
+    uint64_t tot_feature_time_us = 0;
     // Storage for incoming frames ------------------------------------------------
     std::vector<synapse::BroadbandFrame> broadband_frames;
 
-    while (node_running_)
+    // CAR per-array: we'll maintain mean per frame, apply per sample.
+    const size_t channels_per_array = kChannelsPerArray;
+    auto get_array_id = [channels_per_array](size_t ch) { return ch / channels_per_array; };
+
+    size_t num_channels = kChannelsPerArray * kNumArrays; // number of channels in the incoming frames
+    size_t frames_to_read = static_cast<size_t>(std::ceil(1 / (1000.0f / sample_rate_hz_)));
+    calibration_required_samples_ = static_cast<size_t>(calibration_seconds_ * sample_rate_hz_);
+
+
+    // Allocate state vectors
+    thresholds_uv_.assign(num_channels, 0.0f);
+    baseline_accum_.assign(num_channels, 0.0f);
+
+    // Create band-pass filters
+    bandpass_filters_.clear();
+    bandpass_filters_.reserve(num_channels);
+    for (size_t ch = 0; ch < num_channels; ++ch)
     {
+      auto fptr = synapse::create_bandpass_filter<kFilterOrder>(sample_rate_hz_, low_cut_hz_, high_cut_hz_);
+      if (!fptr)
+      {
+        spdlog::error("[SpeechDecoder] Failed to create filter for ch {}", ch);
+      }
+      bandpass_filters_.push_back(std::move(fptr));
+    }
+
+    // Initialise 1-ms window buffers
+    prev_window_.clear();
+    curr_window_.assign(num_channels, std::vector<float>(30, 0.0f));
+    sample_idx_in_window_ = 0;
+
+    spdlog::info("[SpeechDecoder] Reading {} frames per bin ({} ms)", frames_to_read, bin_size_ms_);
+    spdlog::info("[SpeechDecoder] Feature extractor initialised (channels={} sample_rate={} Hz)", num_channels, sample_rate_hz);
+    while (node_running_) {
+      const auto read_start = synapse::get_steady_clock_now();
       // BLOCK until we have a bin's worth of data --------------------------------
-      if (!wait_for_frames(broadband_frames, bin_size_ms_))
+      if (!wait_for_frames(broadband_frames, frames_to_read))
       {
         continue; // try again
       }
 
       const auto loop_start_ns = synapse::get_steady_clock_now();
 
-      // -------------------------------------------------------------------------
-      // Initialise feature-extraction pipeline on first pass --------------------
-      if (!feature_pipeline_initialized_)
-      {
-        const size_t num_channels = broadband_frames.at(0).frame_data_size();
-        const float sample_rate_hz = broadband_frames.at(0).sample_rate_hz();
 
-        // Configure calibration sample threshold
-        calibration_required_samples_ = static_cast<size_t>(calibration_seconds_ * sample_rate_hz);
-
-        // Allocate state vectors
-        thresholds_uv_.assign(num_channels, 0.0f);
-        baseline_accum_.assign(num_channels, 0.0f);
-
-        // Create band-pass filters
-        bandpass_filters_.clear();
-        bandpass_filters_.reserve(num_channels);
-        for (size_t ch = 0; ch < num_channels; ++ch)
-        {
-          auto fptr = synapse::create_bandpass_filter<kFilterOrder>(sample_rate_hz, low_cut_hz_, high_cut_hz_);
-          if (!fptr)
-          {
-            spdlog::error("[SpeechDecoder] Failed to create filter for ch {}", ch);
-          }
-          bandpass_filters_.push_back(std::move(fptr));
-        }
-
-        // Initialise 1-ms window buffers
-        prev_window_.clear();
-        curr_window_.assign(num_channels, std::vector<float>(30, 0.0f));
-        sample_idx_in_window_ = 0;
-        sample_rate_hz_ = sample_rate_hz;  // store for later use
-
-        feature_pipeline_initialized_ = true;
-        spdlog::info("[SpeechDecoder] Feature extractor initialised (channels={} sample_rate={} Hz)", num_channels, sample_rate_hz);
-      }
-
+      const auto read_end = synapse::get_steady_clock_now();
       // --------- Feature computation over this bin ----------------------------
-      const size_t num_channels = broadband_frames.at(0).frame_data_size();
-      const size_t frames_in_bin = broadband_frames.size();
+      const size_t frames_in_bin = frames_to_read;
 
-      // CAR per-array: we'll maintain mean per frame, apply per sample.
-      const size_t channels_per_array = kChannelsPerArray;
-      auto get_array_id = [channels_per_array](size_t ch) { return ch / channels_per_array; };
+      std::vector<std::vector<int32_t>> timeseries_window = frames_to_timeseries(broadband_frames);
+      // Filter the 1-ms windows of samples
+      filter_window(timeseries_window);
 
       // Per-channel accumulators over this 20-ms bin
       std::vector<float> sumsq(num_channels, 0.0f);              // accumulate mean(square) per 1-ms window
@@ -137,24 +159,20 @@ namespace app
         // ------------------------------------------------------------------
         // Compute array-wise mean for CAR
         float array_means[kNumArrays] = {0};
-        size_t counts[kNumArrays] = {0};
         for (size_t ch = 0; ch < num_channels; ++ch)
         {
           size_t aid = get_array_id(ch);
           array_means[aid] += data[ch];
-          counts[aid]++;
         }
-        for (size_t aid = 0; aid < kNumArrays; ++aid)
-          array_means[aid] /= static_cast<float>(counts[aid]);
+        for (size_t aid = 0; aid < kNumArrays; ++aid) {
+          array_means[aid] /= kChannelsPerArray;
+        }
 
         // ------------------------------------------------------------------
         // For each channel: CAR (array-wise) and store into current 1-ms window buffer
         for (size_t ch = 0; ch < num_channels; ++ch)
         {
-          const float centred = data[ch] - array_means[get_array_id(ch)];
-
-          // Store into current window buffer
-          curr_window_[ch][sample_idx_in_window_] = centred;
+          curr_window_[ch][sample_idx_in_window_] = data[ch] - array_means[get_array_id(ch)];
         }
 
         // Advance sample index; when we have 30 samples, process window
@@ -208,6 +226,8 @@ namespace app
         feature_vec.push_back(static_cast<float>(thresh_cross_counts[ch]));
       for (size_t ch = 0; ch < num_channels; ++ch)
         feature_vec.push_back(spike_power[ch]);
+      
+      const auto feature_end = synapse::get_steady_clock_now();
 
       // ---------------- Normalisation ---------------------------------------
       feature_window_.push_back(feature_vec);
@@ -252,6 +272,8 @@ namespace app
         zscored_vec[i] = val;
       }
 
+      const auto zscore_end = synapse::get_steady_clock_now();
+
       // ---------------- Causal Gaussian smoothing ---------------------------
       smoothing_buffer_.push_back(zscored_vec);
       if (smoothing_buffer_.size() > kSmoothingKernelLen)
@@ -275,6 +297,7 @@ namespace app
           v /= weight_sum;
       }
 
+      const auto smoothing_end = synapse::get_steady_clock_now();
       // ---------------- Rolling Z-score Normalisation ------------------------
       // --------------------------------------------------------------------
 
@@ -315,6 +338,8 @@ namespace app
         }
       }
 
+      const auto publish_end = synapse::get_steady_clock_now();
+
       // -------------------------------------------------------------------------
       // TODO: Run ONNX inference. For now publish dummy phoneme index 0 ----------
       // -------------------------------------------------------------------------
@@ -350,37 +375,47 @@ namespace app
         bins_since_threshold_refresh_ = 0;
       }
 
-      const auto loop_dt_ns = synapse::get_steady_clock_now() - loop_start_ns;
-      spdlog::debug("[SpeechDecoder] Loop latency: {} ms", loop_dt_ns.count() * 1e-6);
-    }
-  }
+      uint64_t loop_time_us = (synapse::get_steady_clock_now() - read_start).count() / 1000; 
+      tot_loop_time_us += loop_time_us;
+      uint64_t read_time_us = (read_end - read_start).count() / 1000;
+      tot_read_time_us += read_time_us;
+      uint64_t feature_time_us = (feature_end - read_end).count() / 1000;
+      tot_feature_time_us += feature_time_us;
+      loop_count++;
+      if (loop_count % 50 == 0) {
+        double avg_loop_time_ms = static_cast<double>(tot_loop_time_us * 1e-3) / loop_count;
+        double avg_read_time_us = static_cast<double>(tot_read_time_us) / loop_count;
+        double avg_feature_time_us = static_cast<double>(tot_feature_time_us) / loop_count;
+        spdlog::info("[SpeechDecoder] Loop time: {} ms (avg: {:.3} ms) ----------", loop_time_us * 1e-3, avg_loop_time_ms);
+        spdlog::info("[SpeechDecoder] Feature extraction: {} us (avg: {:.3} ms)", feature_time_us, avg_feature_time_us * 1e-3);
+        spdlog::info("[SpeechDecoder] Read time avg: {:.3} ms ({} us inst)", avg_read_time_us * 1e-3, read_time_us);
+      }
+   }
+ }
 
   // ---------------------------------------------------------------------------
   // Helper functions
   // ---------------------------------------------------------------------------
-  bool SpeechDecoder::wait_for_frames(std::vector<synapse::BroadbandFrame> &frames, float bin_size_ms)
+  bool SpeechDecoder::wait_for_frames(std::vector<synapse::BroadbandFrame> &frames, size_t frames_to_read)
   {
-    if (bin_size_ms <= 0)
+    if (frames_to_read <= 0)
     {
-      spdlog::warn("[SpeechDecoder] Invalid bin size: {} ms", bin_size_ms);
+      spdlog::warn("[SpeechDecoder] Invalid bin size: {} frames", frames_to_read);
       return false;
     }
 
-    const uint64_t target_bin_ns = static_cast<uint64_t>(bin_size_ms * 1e6);
 
     frames.clear();
-    uint64_t first_timestamp_ns = 0;
+    frames.reserve(frames_to_read);
+    size_t frames_read = 0;
 
-    while (node_running_)
+    while (node_running_ && (frames_to_read > frames_read))
     {
       auto messages = data_reader_->receive_multipart();
-      if (messages.empty())
+      if (messages.empty()) 
       {
-        std::this_thread::sleep_for(std::chrono::microseconds(1));
         continue;
       }
-
-      frames.reserve(frames.size() + messages.size());
 
       for (auto &message : messages)
       {
@@ -388,9 +423,7 @@ namespace app
         if (!maybe_frame.has_value())
         {
           spdlog::warn("[SpeechDecoder] Failed to parse broadband frame");
-          if (frames.empty())
-            return false;
-          return true;
+          continue;
         }
 
         const auto &frame = maybe_frame.value();
@@ -400,25 +433,70 @@ namespace app
         if (dropped != 0)
           spdlog::warn("[SpeechDecoder] Dropped {} broadband frames", dropped);
         last_sequence_number_ = frame.sequence_number();
-
-        if (frames.empty())
-          first_timestamp_ns = frame.timestamp_ns();
-
         frames.push_back(frame);
+        frames_read++;
       }
 
-      if (!frames.empty() && (frames.back().timestamp_ns() - first_timestamp_ns >= target_bin_ns))
-      {
-        return true;
-      }
     }
-    return false;
+    return true;
   }
 
   int SpeechDecoder::detect_dropped_frames(uint64_t last_seq, uint64_t current_seq)
   {
     const auto expected = last_seq + 1;
     return static_cast<int>(current_seq - expected);
+  }
+
+  // The algorithm used in UCD's python to pad data before filtering:
+  //    First concatenate: (1) dat (which may contain a few ms of hostoric data), 
+  //    (2) a small portion of flipped data to be filtered to avoid discontinuities at the edge, whilst preserving freq info
+  //    (3) mean padding of 1ms at the end 
+  //    (4) If no historic data is provided, add mean padding of 1ms at the beginning
+  // Instead of passing in historic data, we use the prev_window_ buffer to store the last 30 samples
+  std::vector<int32_t> SpeechDecoder::pad_data(std::vector<int32_t> &data, size_t ch_idx)
+  {
+    const size_t n_samples_1ms = sample_rate_hz_ / 1000; // Number of samples 
+    const size_t flipped_len = static_cast<size_t>(n_samples_1ms / 5);
+    const int32_t mean_val = static_cast<float>(std::accumulate(data.begin(), data.end(), 0)) / data.size();
+    std::vector<int32_t> padded;
+    padded.reserve(data.size() + n_samples_1ms * 2 + flipped_len);
+    // Append previous window (if not yet initialised, use mean value)
+    if (!prev_window_.empty()) {
+      padded.insert(padded.end(), prev_window_[ch_idx].begin(), prev_window_[ch_idx].end());
+    }
+    else {
+      padded.insert(padded.end(), n_samples_1ms, mean_val);
+    }
+    padded.insert(padded.end(), data.begin(), data.end());
+
+    // Append flipped data
+    padded.insert(padded.end(), data.rbegin(), data.rbegin() + flipped_len);
+
+    // Append mean padding
+    padded.insert(padded.end(), n_samples_1ms, mean_val);
+    return padded;
+  }
+
+  // Filter a 1-ms window of samples
+  // The input vector should have shape of (num_channels, 30) 
+  void SpeechDecoder::filter_window(std::vector<std::vector<int32_t>>& ms_window) {
+    for (size_t ch = 0; ch < ms_window.size(); ++ch) {
+      std::vector<int32_t> padded = pad_data(ms_window[ch], ch);
+      const auto& filter = bandpass_filters_[ch];
+      for (size_t i = 0; i < padded.size(); ++i) {
+        // Apply bandpass filter
+        padded[i] = filter->filter(padded[i]);
+      }
+      filter->reset(); // reset filter state for the reverse pass
+      // Reverse filter
+      for (size_t i = 0; i < padded.size(); ++i) {
+        padded[padded.size() - 1 - i] = filter->filter(padded[padded.size() - 1 - i]);
+      }
+      filter->reset(); // reset filter state for next window
+
+      ms_window[ch].clear();
+      ms_window[ch].insert(ms_window[ch].end(), padded.begin() + 30, padded.end() - 36); // Extract the 30 samples corresponding to curr window (indices 30..59)
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -452,19 +530,22 @@ namespace app
       padded.insert(padded.end(), right_pad, mean_val);
 
       // Forward filter
-      auto fwd_filter = synapse::create_bandpass_filter<kFilterOrder>(sample_rate_hz_, low_cut_hz_, high_cut_hz_);
+      auto& filter = bandpass_filters_[ch];
       std::vector<float> fwd_out(padded.size());
       for (size_t i = 0; i < padded.size(); ++i)
-        fwd_out[i] = fwd_filter->filter(padded[i]);
+        fwd_out[i] = filter->filter(padded[i]);
+
+      filter->reset(); // reset filter state for next window
 
       // Reverse filter
-      auto rev_filter = synapse::create_bandpass_filter<kFilterOrder>(sample_rate_hz_, low_cut_hz_, high_cut_hz_);
       std::vector<float> rev_out(fwd_out.size());
       for (size_t i = 0; i < fwd_out.size(); ++i)
-        rev_out[i] = rev_filter->filter(fwd_out[fwd_out.size() - 1 - i]);
+        rev_out[rev_out.size() - 1 - i] = filter->filter(fwd_out[fwd_out.size() - 1 - i]);
+      
+      filter->reset(); // reset filter state for next window
 
       // Reverse back to forward order
-      std::reverse(rev_out.begin(), rev_out.end());
+      // std::reverse(rev_out.begin(), rev_out.end());
 
       // Extract the 30 samples corresponding to curr window (indices 30..59)
       float min_val = std::numeric_limits<float>::max();
@@ -505,6 +586,8 @@ namespace app
     sample_idx_in_window_ = 0;
     baseline_sample_counter_ += n_samples; // keep calibration sample count
   }
+
+
 
 } // namespace app
 
