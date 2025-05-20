@@ -50,10 +50,6 @@
           "type": "BOOL",
           "value": "ON"
         },
-        "BUILD_FOR_QCS6490": {
-          "type": "BOOL",
-          "value": "ON"
-        },
         "CMAKE_BUILD_TYPE": {
           "type": "STRING",
           "value": "Release"
