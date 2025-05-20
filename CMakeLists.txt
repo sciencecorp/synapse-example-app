@@ -76,3 +76,7 @@ target_link_libraries(synapse-example-app
     PRIVATE
         spdlog::spdlog
 )
+
+# Packaging configuration
+set(CPACK_PACKAGE_DIRECTORY "${CMAKE_SOURCE_DIR}/dist")
+include(CPack)

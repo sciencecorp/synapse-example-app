@@ -3,11 +3,10 @@
 
 .cache/
 .vscode/
-build*/
+/build/
+/dist/
 .xmake/
 compile_commands.json
-vcpkg_installed/
-vcpkg/
 x64-linux/
 arm64-linux/
 

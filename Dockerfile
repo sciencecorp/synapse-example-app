@@ -101,7 +101,10 @@ COPY vcpkg.json "${VCPKG_ROOT}/vcpkg.json"
 COPY external "${VCPKG_ROOT}/external/"
 
 RUN cd "${VCPKG_ROOT}" && \
-    ./vcpkg install --triplet arm64-linux-dynamic-release --clean-after-build
+    ./vcpkg install \
+    --triplet arm64-linux-dynamic-release \
+    --x-install-root "$PWD/build/host/vcpkg_installed" \
+    --clean-after-build
 
 # -----------------------------------------------------------------------------
 # Install Synapse SDK from internal repository (same steps on both)
@@ -119,7 +122,7 @@ RUN set -eux; \
 # -----------------------------------------------------------------------------
 ENV VCPKG_INSTALLATION_ROOT="${VCPKG_ROOT}"
 ENV CMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
-ENV VCPKG_INSTALLED_DIR="${VCPKG_ROOT}/vcpkg_installed"
+ENV VCPKG_INSTALLED_DIR="${VCPKG_ROOT}/build/host/vcpkg_installed"
 
 # -----------------------------------------------------------------------------
 # Final workspace & entrypoint
