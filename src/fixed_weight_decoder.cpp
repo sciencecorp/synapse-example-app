@@ -1,4 +1,4 @@
-#include "apps/fixed_weight_decoder.hpp"
+#include "fixed_weight_decoder.hpp"
 #include <spdlog/spdlog.h>
 #include <thread>
 #include <chrono>
