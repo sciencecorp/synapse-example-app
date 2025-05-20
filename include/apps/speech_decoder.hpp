@@ -45,11 +45,14 @@ namespace app
     std::vector<float> calc_spike_bandpower(const std::vector<std::vector<float>> &data, const float& clip_thresh);
     std::vector<int16_t> calc_threshold_crossings(const std::vector<std::vector<float>> &data, const std::vector<float> &thresholds);
     
-    std::vector<float> compute_thresholds(const std::vector<std::vector<int32_t>> &data, const float& thresh_mult);
-    
+    std::vector<float> compute_thresholds(const std::vector<std::vector<float>> &data, const float& thresh_mult);
+
+    bool calibrate_parameters(const std::vector<std::vector<float>>& broadband_calibration_data, 
+                              const std::vector<std::vector<float>>& binned_feat_calib_data);
     // Feature normalization helpers -------------------------------------------
-    void normalize_rnn_input_features();
+    std::vector<std::vector<float>> normalize_rnn_input_features(const double& zscore_clip);
     
+    bool send_features_to_tap(const std::vector<std::vector<float>> &feat_vec, const std::string &tap_name);
 
     // ----------------------------------------------------------------------
 
@@ -63,25 +66,24 @@ namespace app
     const float bin_size_ms_ = 20.0f; // 20-ms bins to match Python pipeline
 
     const float spike_power_clip = 50000.0f; 
-
-    bool threshold_initialized_ = false; // have we computed per-channel thresholds?
+    static constexpr float kThresholdMult = -4.5;
 
     // Per-channel dynamic state -------------------------------------------------
     std::vector<float> thresholds_uv_;     // negative threshold in µV (size = num_channels)
-    std::vector<float> baseline_accum_;    // accumulate squares for RMS estimation during calibration
-    size_t baseline_sample_counter_ = 0;   // how many samples seen so far during calibration
 
     // DSP filters – created after we know channel count / sample rate
     static constexpr int kFilterOrder = 4;
     std::vector<std::unique_ptr<synapse::BaseFilter>> bandpass_filters_;
 
-    // Parameters ---------------------------------------------------------------
+    // Filter Parameters ---------------------------------------------------------------
     const float low_cut_hz_  = 250.0f;
     const float high_cut_hz_ = 5000.0f;
 
     // Calibration duration before thresholds are frozen (seconds)
     const float calibration_seconds_ = 1.0f;
-    size_t calibration_required_samples_ = 0; // set after we know sample rate
+    std::vector<std::vector<float>> broadband_calibration_buffer;
+    std::vector<std::vector<float>> binned_feat_calibration_buffer;
+    bool calibration_finished_ = false; // have we computed per-channel thresholds?
 
     // Array-wise common average referencing (4 arrays × 64 channels)
     static constexpr size_t kChannelsPerArray = 64;
@@ -90,8 +92,6 @@ namespace app
     // Rolling z-score & smoothing ---------------------------------------------
     std::vector<float> feature_means_;
     std::vector<float> feature_stddevs_;
-    static constexpr size_t kNormWindowBins = 200; // ≈4 s of data @20 ms/bin
-    std::deque<std::vector<float>> feature_window_; // stores last kNormWindowBins raw feature vectors (pre-z-score)
 
     // Causal Gaussian smoothing (σ = 2 bins, kernel length 15, 160 ms lag)
     static constexpr size_t kSmoothingKernelLen = 15;
@@ -99,21 +99,13 @@ namespace app
     std::deque<std::vector<float>> smoothing_buffer_;
 
     // Buffers for 1-ms zero-phase filtering ----------------------------------
-    std::vector<std::vector<float>> prev_window_;   // last 30 centred samples per channel
-    std::vector<std::vector<float>> curr_window_;   // accumulating current 30 samples
+    std::vector<std::vector<int32_t>> prev_window_;   // last 30 centred samples per channel
     size_t sample_idx_in_window_ = 0;
 
     const float zscore_clip_ = 10.0f;
 
-    // Threshold refresh --------------------------------------------------------
-    size_t bins_since_threshold_refresh_ = 0;
-    static constexpr size_t kThresholdRefreshBins = 60000; // refresh thresholds roughly every 20 min
-
     // Sample rate (Hz) determined at runtime
     float sample_rate_hz_ = 30000.0f;
-
-    // Process a filled 1-ms window (called when curr_window_ is full)
-    void process_one_ms_window(std::vector<float>& sumsq, std::vector<int32_t>& thresh_cross_counts);
 
     // ----------------- Patch batching for RNN -----------------------------
     static constexpr size_t kPatchSizeBins   = 14; // 14 bins = 280 ms history
