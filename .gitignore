@@ -45,7 +45,6 @@ arm64-linux/
 *.la
 *.a
 *.lib
-app-sdk/
 
 # Executables
 *.exe
@@ -59,7 +58,6 @@ tags
 logs/
 
 # Testing artifacts
-config/
 data/
 Testing/
 

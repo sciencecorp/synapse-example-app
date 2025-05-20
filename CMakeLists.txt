@@ -60,7 +60,7 @@ set_target_properties(synapse-example-app PROPERTIES
 
 target_include_directories(synapse-example-app
     PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
    PRIVATE 
         ${PROTO_OUT_DIR}
 )
