@@ -10,13 +10,36 @@ Make sure you have docker, python3, and synapsectl installed on your system.
 git submodule update --init --recursive
 ```
 
-## Build / Deploy
+## Build
 
 When your app is ready to go, you can deploy it to your Synapse device:
 
 ```bash
-synapsectl -u "your-device-identifier" deploy /path/to/app/
+synapsectl build ${REPO_ROOT}
 ```
 
-It will first prompt you for some device details, subsequent attempts will only re-prompt if your
-device has changed
+## Deploy
+
+```bash
+synapsectl -u "your-device-identifier" deploy ${REPO_ROOT}
+```
+
+## Run
+
+To start the app:
+
+```bash
+synapsectl -u "your-device-identifier" start ${REPO_ROOT}/config/simulator_32ch.json
+```
+
+To listen to joystick output:
+
+```bash
+python3 ${REPO_ROOT}/scripts/listen_to_joystick.py --device-ip <your-device-ip>
+```
+
+To stop the app:
+
+```bash
+synapsectl -u "your-device-identifier" stop
+```
