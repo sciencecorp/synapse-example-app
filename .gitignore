@@ -1,13 +1,14 @@
 *.pb.cc
 *.pb.h
+build-aarch64/
+vcpkg_installed/
 
 .cache/
 .vscode/
-build*/
+/build/
+/dist/
 .xmake/
 compile_commands.json
-vcpkg_installed/
-vcpkg/
 x64-linux/
 arm64-linux/
 
@@ -45,7 +46,6 @@ arm64-linux/
 *.la
 *.a
 *.lib
-app-sdk/
 
 # Executables
 *.exe
@@ -59,7 +59,6 @@ tags
 logs/
 
 # Testing artifacts
-config/
 data/
 Testing/
 
