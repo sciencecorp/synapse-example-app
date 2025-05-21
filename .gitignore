@@ -1,5 +1,7 @@
 *.pb.cc
 *.pb.h
+build-aarch64/
+vcpkg_installed/
 
 .cache/
 .vscode/
