@@ -14,13 +14,15 @@ pip install -r ${REPO_ROOT}/client/requirements.txt
 
 ## Build
 
-When your app is ready to go, you can deploy it to your Synapse device:
+As you develop, you can build your app:
 
 ```bash
 synapsectl build ${REPO_ROOT}
 ```
 
 ## Deploy
+
+When your app is ready to go, you can deploy it to your Synapse device:
 
 ```bash
 synapsectl -u "your-device-identifier" deploy ${REPO_ROOT}
