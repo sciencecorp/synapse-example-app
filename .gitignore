@@ -77,3 +77,5 @@ Testing/
 
 # cached permissions
 .synapse_deploy_cache.json
+app-sdk/
+vcpkg_installed/

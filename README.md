@@ -47,3 +47,16 @@ To stop the app:
 ```bash
 synapsectl -u "your-device-identifier" stop
 ```
+
+## Development
+If you want, it is recommended to install and configure pre-commit to auto lint your files.
+
+```bash
+pip install pre-commit
+
+pre-commit install
+
+# Now this will be run when you commit
+# However, you can also run it manually like this
+pre-commit run
+```

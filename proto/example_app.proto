@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package app;
+
+message ExampleAppConfig {
+  float low_cutoff_hz = 1;
+  float high_cutoff_hz = 2;
+
+  // Threshold in microvolts
+  float spike_threshold_uv = 3;
+
+  // Samples per waveform
+  uint32 waveform_size = 4;
+
+  // Refractory Period, in microseconds
+  uint32 refractory_period_us = 5;
+
+  // Number of bins to use for firing rate estimation
+  uint32 window_size = 6;
+
+  // max expected rate, used for normalization
+  float max_expected_rate = 7;
+
+  // Cursor control channels to use, we expect there to be four channels
+  repeated int32 cursor_channels = 8;
+}

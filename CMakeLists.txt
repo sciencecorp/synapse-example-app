@@ -5,8 +5,7 @@ include("cmake/protos.cmake")
 
 option(BUILD_FOR_ARM64 "Build for ARM64 architecture" OFF)
 option(USE_LOCAL_SDK "Use locally built SDK instead of system installation" OFF)
-set(LOCAL_SDK_PATH "app-sdk" CACHE PATH "Path to local SDK build directory")
-
+set(LOCAL_SDK_PATH "app-sdk")
 if (BUILD_FOR_ARM64 AND NOT CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
   message(STATUS "Cross compiling for ARM64")
   set(CMAKE_SYSTEM_NAME Linux)
@@ -22,18 +21,17 @@ find_package(Protobuf REQUIRED)
 find_package(spdlog REQUIRED CONFIG)
 find_package(iir REQUIRED CONFIG)
 
-if(USE_LOCAL_SDK)
+if(true)
     if(NOT LOCAL_SDK_PATH)
         message(FATAL_ERROR "USE_LOCAL_SDK is ON but LOCAL_SDK_PATH is not set")
     endif()
     message(STATUS "Using local SDK from: ${LOCAL_SDK_PATH}")
-    
+
     set(SDK_LIB_PATH "${LOCAL_SDK_PATH}")
     set(SDK_LIB_NAME "synapse-app-sdk")
     link_directories(${SDK_LIB_PATH})
-    
+
     set(SYNAPSE_APP_SDK_LIB ${SDK_LIB_NAME})
-    
     include_directories("${LOCAL_SDK_PATH}/include")
 else()
     find_library(SYNAPSE_APP_SDK_LIB NAMES synapse-app-sdk libsynapse-app-sdk.so.0.1.0)
@@ -45,9 +43,18 @@ add_executable(synapse-example-app
     ${CMAKE_CURRENT_SOURCE_DIR}/src/fixed_weight_decoder.cpp
 )
 
+# Generate synapse sdk api protobufs
 generate_protobufs(
     TARGET synapse-example-app
     OUT_PROTO_DIR PROTO_OUT_DIR
+    PROTO_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/external/sciencecorp/synapse-api"
+)
+
+# And also generate your custom app configuration protobuf
+generate_protobufs(
+    TARGET synapse-example-app
+    OUT_PROTO_DIR APP_PROTO_OUT_DIR
+    PROTO_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/proto"
 )
 
 # Be strict about the standard
@@ -61,8 +68,9 @@ set_target_properties(synapse-example-app PROPERTIES
 target_include_directories(synapse-example-app
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src
-   PRIVATE 
+   PRIVATE
         ${PROTO_OUT_DIR}
+        ${APP_PROTO_OUT_DIR}
 )
 
 # Link dependencies

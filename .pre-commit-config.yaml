@@ -1,0 +1,45 @@
+repos:
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v5.0.0
+  hooks:
+    - id: trailing-whitespace
+    - id: check-added-large-files
+    - id: check-executables-have-shebangs
+    - id: check-json
+    - id: check-shebang-scripts-are-executable
+    - id: check-yaml
+    - id: detect-private-key
+    - id: end-of-file-fixer
+    - id: mixed-line-ending
+    - id: trailing-whitespace
+
+- repo: https://github.com/pocc/pre-commit-hooks
+  rev: v1.3.5
+  hooks:
+    - id: clang-format
+      args:
+        - --style=file
+        - -i
+    - id: cppcheck
+      name: cppcheck
+      language: system
+      entry: cppcheck
+      args: [
+        "--enable=style,performance,warning",
+        "--check-level=exhaustive",
+        "--suppress=missingInclude",
+        "--suppress=missingIncludeSystem",
+        "--suppress=unusedFunction",
+        "--suppress=useStlAlgorithm",
+        "--inconclusive",
+        "--error-exitcode=1",
+        "--std=c++20",
+        "--platform=unix64",
+        "--language=c++"
+      ]
+      files: \.(c|cpp)$
+
+-   repo: https://github.com/koalaman/shellcheck-precommit
+    rev: v0.10.0
+    hooks:
+    -   id: shellcheck

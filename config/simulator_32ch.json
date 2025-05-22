@@ -4,7 +4,17 @@
       "type": "kApplication",
       "id": 2,
       "application": {
-        "name": "synapse-example-app"
+        "name": "synapse-example-app",
+        "parameters": {
+          "low_cutoff_hz": 200.0,
+          "high_cutoff_hz": 5000.0,
+          "spike_threshold_uv": 50.0,
+          "waveform_size": 50,
+          "refractory_period_us": 1000,
+          "window_size": 5,
+          "max_expected_rate": 10.0,
+          "cursor_channels": [0, 7, 16, 30]
+        }
       }
     },
     {
