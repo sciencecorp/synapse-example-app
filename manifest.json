@@ -1,3 +1,5 @@
 {
-  "name": "synapse-example-app"
+  "name": "synapse-example-app",
+  "proto_files": ["proto/example_app.proto"],
+  "device_config_path": "config/simulator_32ch.json"
 }

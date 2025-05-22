@@ -55,6 +55,8 @@ generate_protobufs(
     TARGET synapse-example-app
     OUT_PROTO_DIR APP_PROTO_OUT_DIR
     PROTO_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/proto"
+    GENERATE_PYTHON
+    PYTHON_OUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/proto"
 )
 
 # Be strict about the standard

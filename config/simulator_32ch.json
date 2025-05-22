@@ -6,6 +6,7 @@
       "application": {
         "name": "synapse-example-app",
         "parameters": {
+          "@type": "type.googleapis.com/app.ExampleAppConfig",
           "low_cutoff_hz": 200.0,
           "high_cutoff_hz": 5000.0,
           "spike_threshold_uv": 50.0,
