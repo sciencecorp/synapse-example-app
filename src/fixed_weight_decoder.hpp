@@ -18,15 +18,15 @@ namespace app {
 // 10 hz
 constexpr auto kPublishRateSec = 1.0 / 10.0;
 class FixedWeightDecoder : public synapse::App {
-public:
+ public:
   FixedWeightDecoder();
 
   virtual bool setup() override;
 
-protected:
+ protected:
   virtual void main() override;
 
-private:
+ private:
   // Use this to detect if there is frame drops
   uint64_t last_sequence_number_ = 0;
 
@@ -45,15 +45,15 @@ private:
 
   // Spike detection configuration and detectors
   std::atomic<bool> spike_detectors_initialized_{false};
-  float sample_rate_hz_ = 30000.0; // Will be updated during initialization
+  float sample_rate_hz_ = 30000.0;  // Will be updated during initialization
   std::vector<std::unique_ptr<synapse::BaseSpikeDetector>> spike_detectors_;
 
   // Collection of detected spikes
-  std::vector<synapse::SpikeEvent *> detected_spikes_;
+  std::vector<synapse::SpikeEvent*> detected_spikes_;
 
   // Spike binning and cursor control parameters
   std::deque<std::vector<uint32_t>>
-      spike_count_window_; // Window buffer to store binned spike counts
+      spike_count_window_;  // Window buffer to store binned spike counts
 
   // We will select 4 channels randomly for cursor control
   // Default to a random selection
@@ -61,8 +61,7 @@ private:
 
   // Waits until a set of broadband frames are read from the node
   // Returns false if there was an error reading
-  bool wait_for_frames(std::vector<synapse::BroadbandFrame> &frames,
-                       const float bin_size_ms);
+  bool wait_for_frames(std::vector<synapse::BroadbandFrame>& frames, const float bin_size_ms);
 
   // If not zero, we dropped some frames, determine what to do
   int detect_dropped_frames(const uint64_t last_sequence_number,
@@ -73,8 +72,8 @@ private:
 
   // Before starting, set up our filters.
   // We can use the first broadband frame to do this initialization
-  void initialize_filters(const size_t channel_count,
-                          const float sample_rate_hz, const float bin_size_ms);
+  void initialize_filters(const size_t channel_count, const float sample_rate_hz,
+                          const float bin_size_ms);
 
   // Initialize spike detectors for each channel
   void initialize_spike_detectors(const size_t channel_count);
@@ -83,9 +82,8 @@ private:
   void cleanup_spike_events();
 
   // Calculate cursor position from spike counts
-  std::pair<float, float>
-  calculate_cursor_position(const std::vector<uint32_t> &spike_counts);
+  std::pair<float, float> calculate_cursor_position(const std::vector<uint32_t>& spike_counts);
 
-  bool validate_configuration(const app::ExampleAppConfig &config);
+  bool validate_configuration(const app::ExampleAppConfig& config);
 };
-} // namespace app
+}  // namespace app

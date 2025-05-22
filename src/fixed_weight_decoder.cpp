@@ -1,25 +1,23 @@
 #include "fixed_weight_decoder.hpp"
-#include <algorithm> // for std::clamp
+#include <algorithm>  // for std::clamp
 #include <chrono>
 #include <spdlog/spdlog.h>
-#include <synapse-app-sdk/middleware/conversions.hpp> // for parse_protobuf_message
+#include <synapse-app-sdk/middleware/conversions.hpp>  // for parse_protobuf_message
 #include <thread>
 
 namespace app {
 // Helper function to clamp a value between min and max
-template <typename T> T clamp(T value, T min, T max) {
+template <typename T>
+T clamp(T value, T min, T max) {
   return (value < min) ? min : (value > max) ? max : value;
 }
 
-FixedWeightDecoder::FixedWeightDecoder()
-    : publish_rate_limiter_(kPublishRateSec) {}
+FixedWeightDecoder::FixedWeightDecoder() : publish_rate_limiter_(kPublishRateSec) {}
 
 bool FixedWeightDecoder::setup() {
   // Make sure our app configuration is valid
   if (!get_app_parameters(
-          [this](const app::ExampleAppConfig &config) {
-            return validate_configuration(config);
-          },
+          [this](const app::ExampleAppConfig& config) { return validate_configuration(config); },
           configuration_)) {
     spdlog::error("Failed to validate app parameters from app configuration");
     return false;
@@ -89,34 +87,32 @@ void FixedWeightDecoder::main() {
     // TODO/NOTE: you could drop out early based on timestamps
     std::vector<std::vector<float>> filtered_channel_data;
     filtered_channel_data.resize(broadband_frames.at(0).frame_data_size());
-    for (auto &channel_vector : filtered_channel_data) {
+    for (auto& channel_vector : filtered_channel_data) {
       channel_vector.reserve(broadband_frames.size());
     }
 
     // Create a vector to count spikes per channel in this batch
-    std::vector<uint32_t> spike_counts(broadband_frames.at(0).frame_data_size(),
-                                       0);
+    std::vector<uint32_t> spike_counts(broadband_frames.at(0).frame_data_size(), 0);
 
-    for (const auto &frame : broadband_frames) {
-      const auto &frame_data = frame.frame_data();
+    for (const auto& frame : broadband_frames) {
+      const auto& frame_data = frame.frame_data();
       const uint64_t frame_timestamp_ns = frame.timestamp_ns();
 
       for (int channel_id = 0; channel_id < frame_data.size(); ++channel_id) {
         // TODO: bounds checking - but we might not even want this way of doing
         // things
-        auto &channel_filter = bandpass_filters_.at(channel_id);
-        const float filtered_data =
-            channel_filter->filter(frame_data[channel_id]);
+        auto& channel_filter = bandpass_filters_.at(channel_id);
+        const float filtered_data = channel_filter->filter(frame_data[channel_id]);
         filtered_channel_data.at(channel_id).push_back(filtered_data);
 
         // 3. Detect spikes on the filtered data
         if (spike_detectors_initialized_) {
-          auto &spike_detector = spike_detectors_.at(channel_id);
+          auto& spike_detector = spike_detectors_.at(channel_id);
 
           // Pass the filtered data to the spike detector along with the frame
           // timestamp The detector handles the rest internally
-          synapse::SpikeEvent *spike_event = spike_detector->detect(
-              filtered_data, frame_timestamp_ns, channel_id);
+          synapse::SpikeEvent* spike_event =
+              spike_detector->detect(filtered_data, frame_timestamp_ns, channel_id);
 
           if (spike_event != nullptr) {
             // Store the detected spike for further processing
@@ -148,25 +144,21 @@ void FixedWeightDecoder::main() {
 
       for (int i = 0; i < 4; i++) {
         size_t ch = cursor_channels_[i];
-        for (const auto &bin_counts : spike_count_window_) {
+        for (const auto& bin_counts : spike_count_window_) {
           firing_rates[i] += bin_counts[ch];
         }
-        firing_rates[i] /= configuration_.window_size(); // Average over window
+        firing_rates[i] /= configuration_.window_size();  // Average over window
       }
 
       // Calculate x-position based on first channel pair (differential)
-      cursor_x = firing_rates[1] -
-                 firing_rates[0]; // Positive = right, negative = left
+      cursor_x = firing_rates[1] - firing_rates[0];  // Positive = right, negative = left
 
       // Calculate y-position based on second channel pair (differential)
-      cursor_y =
-          firing_rates[3] - firing_rates[2]; // Positive = up, negative = down
+      cursor_y = firing_rates[3] - firing_rates[2];  // Positive = up, negative = down
 
       // Normalize to reasonable range (-1 to 1)
-      cursor_x =
-          clamp(cursor_x / configuration_.max_expected_rate(), -1.0f, 1.0f);
-      cursor_y =
-          clamp(cursor_y / configuration_.max_expected_rate(), -1.0f, 1.0f);
+      cursor_x = clamp(cursor_x / configuration_.max_expected_rate(), -1.0f, 1.0f);
+      cursor_y = clamp(cursor_y / configuration_.max_expected_rate(), -1.0f, 1.0f);
     } else {
       // Not enough data in window yet, use default values
       cursor_x = 0.0f;
@@ -176,11 +168,9 @@ void FixedWeightDecoder::main() {
     // Create a tensor with the cursor position
     synapse::Tensor output_tensor;
     const auto tensor_shape = {2};
-    output_tensor.mutable_shape()->Add(tensor_shape.begin(),
-                                       tensor_shape.end());
+    output_tensor.mutable_shape()->Add(tensor_shape.begin(), tensor_shape.end());
     output_tensor.set_dtype(synapse::Tensor_DType_DT_FLOAT);
-    output_tensor.set_endianness(
-        synapse::Tensor_Endianness_TENSOR_LITTLE_ENDIAN);
+    output_tensor.set_endianness(synapse::Tensor_Endianness_TENSOR_LITTLE_ENDIAN);
 
     // Use the calculated cursor position instead of raw data values
     output_tensor.set_data(synapse::pack_tensor_data({cursor_x, cursor_y}));
@@ -207,8 +197,8 @@ void FixedWeightDecoder::main() {
   }
 }
 
-bool FixedWeightDecoder::wait_for_frames(
-    std::vector<synapse::BroadbandFrame> &frames, float bin_size_ms) {
+bool FixedWeightDecoder::wait_for_frames(std::vector<synapse::BroadbandFrame>& frames,
+                                         float bin_size_ms) {
   if (bin_size_ms <= 0) {
     spdlog::warn("invalid bin size of: {}", bin_size_ms);
     return false;
@@ -239,11 +229,10 @@ bool FixedWeightDecoder::wait_for_frames(
     frames.reserve(frames.size() + messages.size());
 
     // Process each received message in this multipart
-    for (auto &message : messages) {
+    for (auto& message : messages) {
       // Parse the message into a BroadbandFrame
       const auto maybe_frame =
-          synapse::parse_protobuf_message<synapse::BroadbandFrame>(
-              std::move(message));
+          synapse::parse_protobuf_message<synapse::BroadbandFrame>(std::move(message));
       if (!maybe_frame.has_value()) {
         spdlog::warn("Failed to parse broadband frame");
         // If we have no frames at all, return false
@@ -254,11 +243,11 @@ bool FixedWeightDecoder::wait_for_frames(
         return true;
       }
 
-      const auto &broadband_frame = maybe_frame.value();
+      const auto& broadband_frame = maybe_frame.value();
 
       // Check for dropped frames
-      const auto dropped_frames = detect_dropped_frames(
-          last_sequence_number_, broadband_frame.sequence_number());
+      const auto dropped_frames =
+          detect_dropped_frames(last_sequence_number_, broadband_frame.sequence_number());
       if (dropped_frames != 0) {
         spdlog::warn("Dropped: {} frames", dropped_frames);
       }
@@ -276,9 +265,8 @@ bool FixedWeightDecoder::wait_for_frames(
     // TODO: Instead, we could process the entire multipart?
     // After processing this multipart, check if we've reached the bin size
     if (!frames.empty()) {
-      const auto &last_frame = frames.back();
-      if (last_frame.timestamp_ns() - first_timestamp_ns >=
-          target_bin_size_ns) {
+      const auto& last_frame = frames.back();
+      if (last_frame.timestamp_ns() - first_timestamp_ns >= target_bin_size_ns) {
         // We've collected enough frames to reach the bin size
         return true;
       }
@@ -287,35 +275,30 @@ bool FixedWeightDecoder::wait_for_frames(
   return false;
 }
 
-int FixedWeightDecoder::detect_dropped_frames(
-    const uint64_t last_sequence_number,
-    const uint64_t current_sequence_number) {
+int FixedWeightDecoder::detect_dropped_frames(const uint64_t last_sequence_number,
+                                              const uint64_t current_sequence_number) {
   const auto expected_sequence_number = last_sequence_number + 1;
   return (current_sequence_number - expected_sequence_number);
 }
 
-void FixedWeightDecoder::initialize_spike_detectors(
-    const size_t channel_count) {
+void FixedWeightDecoder::initialize_spike_detectors(const size_t channel_count) {
   // Create spike detectors for each channel
   spike_detectors_.clear();
   spike_detectors_.reserve(channel_count);
 
-  for (size_t channel_index = 0; channel_index < channel_count;
-       ++channel_index) {
+  for (size_t channel_index = 0; channel_index < channel_count; ++channel_index) {
     auto detector_ptr = synapse::create_threshold_detector(
         configuration_.spike_threshold_uv(), configuration_.waveform_size(),
         configuration_.refractory_period_us(), sample_rate_hz_);
 
     if (detector_ptr == nullptr) {
-      spdlog::error("Failed to create spike detector for channel: {}",
-                    channel_index);
+      spdlog::error("Failed to create spike detector for channel: {}", channel_index);
     }
     spike_detectors_.push_back(std::move(detector_ptr));
   }
 
-  spdlog::info(
-      "Initialized spike detectors with threshold: {} μV, sample rate: {} Hz",
-      configuration_.spike_threshold_uv(), sample_rate_hz_);
+  spdlog::info("Initialized spike detectors with threshold: {} μV, sample rate: {} Hz",
+               configuration_.spike_threshold_uv(), sample_rate_hz_);
   spike_detectors_initialized_ = true;
 }
 
@@ -327,25 +310,22 @@ void FixedWeightDecoder::cleanup_spike_events() {
   detected_spikes_.clear();
 }
 
-void FixedWeightDecoder::initialize_filters(const size_t channel_count,
-                                            const float sample_rate_hz,
+void FixedWeightDecoder::initialize_filters(const size_t channel_count, const float sample_rate_hz,
                                             const float bin_size_ms) {
   if (!initialize_cursor_channels(channel_count)) {
     return;
   }
 
   // We have four channels selected, initialize our filters
-  spdlog::info("Initializing\tsample_rate={} Hz\tchannels={}\tbin_size={} ms",
-               sample_rate_hz, channel_count, bin_size_ms);
+  spdlog::info("Initializing\tsample_rate={} Hz\tchannels={}\tbin_size={} ms", sample_rate_hz,
+               channel_count, bin_size_ms);
 
   // Create filters for each channel
   bandpass_filters_.clear();
   bandpass_filters_.reserve(channel_count);
-  for (size_t channel_index = 0; channel_index < channel_count;
-       ++channel_index) {
+  for (size_t channel_index = 0; channel_index < channel_count; ++channel_index) {
     auto filter_ptr = synapse::create_bandpass_filter<kSpectralFilterOrder>(
-        sample_rate_hz, configuration_.low_cutoff_hz(),
-        configuration_.high_cutoff_hz());
+        sample_rate_hz, configuration_.low_cutoff_hz(), configuration_.high_cutoff_hz());
     if (filter_ptr == nullptr) {
       spdlog::error("Failed to create filter for channel: {}", channel_index);
     }
@@ -355,8 +335,7 @@ void FixedWeightDecoder::initialize_filters(const size_t channel_count,
   filters_initialized_ = true;
 }
 
-bool FixedWeightDecoder::initialize_cursor_channels(
-    const size_t channel_count) {
+bool FixedWeightDecoder::initialize_cursor_channels(const size_t channel_count) {
   if (channel_count < 4) {
     spdlog::warn("Need at least four channels for joystick control");
     return false;
@@ -369,7 +348,7 @@ bool FixedWeightDecoder::initialize_cursor_channels(
 
   std::stringstream ss;
   ss << "Using [";
-  for (const auto &channel : cursor_channels_) {
+  for (const auto& channel : cursor_channels_) {
     ss << channel << ",";
   }
 
@@ -378,14 +357,12 @@ bool FixedWeightDecoder::initialize_cursor_channels(
   return true;
 }
 
-bool FixedWeightDecoder::validate_configuration(
-    const app::ExampleAppConfig &config) {
+bool FixedWeightDecoder::validate_configuration(const app::ExampleAppConfig& config) {
   // FIlters should be above zero, high cutoff should be above low cutoff
   if (config.low_cutoff_hz() <= 0 || config.high_cutoff_hz() <= 0 ||
       config.low_cutoff_hz() >= config.high_cutoff_hz()) {
-    spdlog::error(
-        "Invalid filter configuration: low_cutoff={} Hz, high_cutoff={} Hz",
-        config.low_cutoff_hz(), config.high_cutoff_hz());
+    spdlog::error("Invalid filter configuration: low_cutoff={} Hz, high_cutoff={} Hz",
+                  config.low_cutoff_hz(), config.high_cutoff_hz());
     return false;
   }
 
@@ -397,8 +374,7 @@ bool FixedWeightDecoder::validate_configuration(
 
   // Refractory period should be above zero
   if (config.refractory_period_us() <= 0) {
-    spdlog::error("Invalid refractory period: {}",
-                  config.refractory_period_us());
+    spdlog::error("Invalid refractory period: {}", config.refractory_period_us());
     return false;
   }
 
@@ -424,8 +400,6 @@ bool FixedWeightDecoder::validate_configuration(
   return true;
 }
 
-} // namespace app
+}  // namespace app
 
-int main(const int, const char **) {
-  return synapse::Entrypoint<app::FixedWeightDecoder>();
-}
+int main(const int, const char**) { return synapse::Entrypoint<app::FixedWeightDecoder>(); }
