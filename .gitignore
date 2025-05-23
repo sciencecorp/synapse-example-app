@@ -1,5 +1,6 @@
 *.pb.cc
 *.pb.h
+*_pb2.py
 
 .cache/
 .vscode/
@@ -77,3 +78,7 @@ Testing/
 
 # cached permissions
 .synapse_deploy_cache.json
+app-sdk/
+vcpkg_installed/
+*.desc
+
