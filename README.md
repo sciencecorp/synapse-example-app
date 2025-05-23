@@ -1,27 +1,17 @@
 # Synapse Example App
 
-An example of how to build and deploy a synapse app
-
-## Bootstrapping
-
-Make sure you have docker, python3, and synapsectl installed on your system.
-
+## tl;dr
 ```bash
 git submodule update --init --recursive
+pip install -r ${REPO_ROOT}/client/requirements.txt
+
+synapsectl build ${REPO_ROOT}
+synapsectl -u "your-device-identifier" deploy ${REPO_ROOT}
+synapsectl -u "your-device-identifier" start ${REPO_ROOT}/config/simulator_32ch.json
+python3 ${REPO_ROOT}/client/listen_to_joystick.py --device-ip <your-device-ip>
+
+synapsectl -u "your-device-identifier" stop
 ```
-
-## Build / Deploy
-
-When your app is ready to go, you can deploy it to your Synapse device:
-
-```bash
-synapsectl -u "your-device-identifier" deploy /path/to/app/
-```
-
-It will first prompt you for some device details, subsequent attempts will only re-prompt if your
-device has changed
-
-# Synapse App Documentation
 
 ## What are Synapse Apps
 Synapse Apps are standalone applications that can be deployed to a synapse device. Written in C++, they allow you to run your neural processing algorithms on device to minimize latency.
@@ -30,7 +20,7 @@ Apps can be integrated into existing signal chains using `kApplication` node typ
 
 ## Prerequisites
 Before beginning, make sure you have the following installed:
- - Python3
+ - Python3.10+
  - pip
  - docker
 
@@ -69,7 +59,7 @@ Errors during the build should be self descriptive, but feel free to open an [is
 With a built application, you can now deploy it to run on your device. This will build and package and install your application onto your synapse device. 
 
 ```
-synapsectl -u "device uri" deploy <path to synapse-example-app>
+synapsectl -u "your-device-identifier" deploy <path to synapse-example-app>
 ```
 
 If the deployment is successful, you are now ready to start your application.
@@ -78,20 +68,20 @@ If the deployment is successful, you are now ready to start your application.
 With the app deployed, you can now start your application. Using a configuration file configured with your signal chain, you can run the following to start
 
 ```
-synapsectl -u "device uri" start <path to config>.json
+synapsectl -u "your-device-identifier" start <path to config>.json
 ```
 
 With the application running, you can make sure it is running by
 
 ```
-synapsectl -u "device uri" info
+synapsectl -u "your-device-identifier" info
 ```
 
 And stop and reconfigure using
 
 ```
-synapsectl -u "device uri" stop
-synapsectl -u "device uri" start <path to config>.json
+synapsectl -u "your-device-identifier" stop
+synapsectl -u "your-device-identifier" start <path to config>.json
 ```
 
 ## App Development
@@ -102,13 +92,13 @@ In general, you should create a class that inherits from `synapse::App` and impl
 For the client side, you can listen to data streams you created using the `Taps` api. To see the list of available taps, run:
 
 ```bash
-synapsectl -u "device uri" taps list
+synapsectl -u "your-device-identifier" taps list
 ```
 
 And to make sure you are getting data, you can run
 
 ```bash
-synapsectl -u "device uri" taps stream "taps_name"
+synapsectl -u "your-device-identifier" taps stream "taps_name"
 ```
 
 If your processing code is in python, you can use taps like this. We also provide an example client application to pair with your deployed application
@@ -127,6 +117,8 @@ for message in tap.stream():
 
 ```
 
+To listen to joystick output:
 
-
-
+```bash
+python3 ${REPO_ROOT}/client/listen_to_joystick.py --device-ip <your-device-ip>
+```

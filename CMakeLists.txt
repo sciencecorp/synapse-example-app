@@ -60,7 +60,7 @@ set_target_properties(synapse-example-app PROPERTIES
 
 target_include_directories(synapse-example-app
     PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
    PRIVATE 
         ${PROTO_OUT_DIR}
 )
@@ -76,3 +76,7 @@ target_link_libraries(synapse-example-app
     PRIVATE
         spdlog::spdlog
 )
+
+# Packaging configuration
+set(CPACK_PACKAGE_DIRECTORY "${CMAKE_SOURCE_DIR}/dist")
+include(CPack)

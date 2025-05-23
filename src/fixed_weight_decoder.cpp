@@ -1,4 +1,4 @@
-#include "apps/fixed_weight_decoder.hpp"
+#include "fixed_weight_decoder.hpp"
 #include <spdlog/spdlog.h>
 #include <thread>
 #include <chrono>
@@ -32,6 +32,15 @@ namespace app
       spdlog::warn("Failed to create tap for joystick out");
       return false;
     }
+
+    // Enable performance monitoring
+    function_profiler_manager_.add("full_loop");
+
+    // Publish loop stats every 1 second
+    if (!enable_function_profiling(std::chrono::seconds(1))) {
+      spdlog::error("Failed to enable function profile monitoring");
+      return false;
+    }
     return true;
   }
 
@@ -51,7 +60,7 @@ namespace app
       }
 
       // Keep track of how long processing takes
-      const auto start_of_loop_ns = synapse::get_steady_clock_now();
+      start_profile("full_loop");
 
       // You have a set of broadband frames now, you can do whatever you want
       // 1. Initialize the filters and our state on the first full set of frames
@@ -198,8 +207,10 @@ namespace app
         {
           spdlog::warn("Failed to publish tensor data");
         }
-        const auto loop_dt_ns = synapse::get_steady_clock_now() - start_of_loop_ns;
-        spdlog::info("Loop took: {} ms", loop_dt_ns.count() * 1e-6);
+        stop_profile("full_loop");
+
+        // We can also get a debug print of the output
+        print_profile("full_loop");
       }
 
       // You can sleep here if you want,
