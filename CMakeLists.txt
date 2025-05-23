@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20.1)
-project(synapse-example-app)
+project(synapse-spike-detect)
 
 include("cmake/protos.cmake")
 
@@ -41,24 +41,24 @@ endif()
 
 message(STATUS "SYNAPSE_APP_SDK_LIB: ${SYNAPSE_APP_SDK_LIB}")
 
-add_executable(synapse-example-app
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/fixed_weight_decoder.cpp
+add_executable(synapse-spike-detect
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/spike_detector.cpp
 )
 
 generate_protobufs(
-    TARGET synapse-example-app
+    TARGET synapse-spike-detect
     OUT_PROTO_DIR PROTO_OUT_DIR
 )
 
 # Be strict about the standard
-set_target_properties(synapse-example-app PROPERTIES
+set_target_properties(synapse-spike-detect PROPERTIES
     CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF
     POSITION_INDEPENDENT_CODE ON
 )
 
-target_include_directories(synapse-example-app
+target_include_directories(synapse-spike-detect
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src
    PRIVATE 
@@ -66,7 +66,7 @@ target_include_directories(synapse-example-app
 )
 
 # Link dependencies
-target_link_libraries(synapse-example-app
+target_link_libraries(synapse-spike-detect
     PUBLIC
         cppzmq
         protobuf::libprotobuf

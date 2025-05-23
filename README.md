@@ -1,6 +1,6 @@
-# Synapse Example App
+# Synapse Spike Detect
 
-An example of how to build and deploy a synapse app
+An app which streams off spike waveforms from a Synapse device, plots them in real-time, and saves them to a JSONL file.
 
 ## Bootstrapping
 
@@ -9,41 +9,43 @@ Make sure you have docker running, and python3.10+ installed.
 ```bash
 git submodule update --init --recursive
 
-pip install -r ${REPO_ROOT}/client/requirements.txt
+pip install -r ./client/requirements.txt
 ```
 
 ## Build
 
-As you develop, you can build your app:
-
 ```bash
-synapsectl build ${REPO_ROOT}
+synapsectl build .
 ```
 
 ## Deploy
 
-When your app is ready to go, you can deploy it to your Synapse device:
-
 ```bash
-synapsectl -u "your-device-identifier" deploy ${REPO_ROOT}
+synapsectl -u your-device-identifier deploy .
 ```
 
 ## Run
 
-To start the app:
+To start the app with Scifi's onboard broadband source simulator:
 
 ```bash
-synapsectl -u "your-device-identifier" start ${REPO_ROOT}/config/simulator_32ch.json
+synapsectl -u your-device-identifier start ./config/simulator.json
 ```
 
-To listen to joystick output:
+To start the app with Sciplex:
 
 ```bash
-python3 ${REPO_ROOT}/client/listen_to_joystick.py --device-ip <your-device-ip>
+synapsectl -u your-device-identifier start ./config/sciplex.json
+```
+
+To listen for spikes:
+
+```bash
+python3.12 ./client/plot_spikes.py --output-jsonl data/spikes.jsonl --device-ip <your-device-ip>
 ```
 
 To stop the app:
 
 ```bash
-synapsectl -u "your-device-identifier" stop
+synapsectl -u your-device-identifier stop
 ```
