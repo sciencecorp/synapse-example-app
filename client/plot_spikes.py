@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import struct
 import sys
 import threading
 import time
-import signal
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Tuple
@@ -25,9 +25,13 @@ from pyqtgraph.Qt import QtCore, QtWidgets
 from synapse.api.datatype_pb2 import Tensor
 from synapse.client.taps import Tap
 
+# Shared pen used for all waveforms
+WHITE_PEN = pg.mkPen("w", width=1)
+
 # --------------------------------------------------------------------------------------
 # CLI helpers
 # --------------------------------------------------------------------------------------
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser("Live spike viewer (pyqtgraph backend)")
@@ -38,26 +42,32 @@ def parse_args() -> argparse.Namespace:
 
 
 # --------------------------------------------------------------------------------------
-# Tensor → tuple helper
+# Tensor → tuple helper (now includes sequence number for stats)
 # --------------------------------------------------------------------------------------
 
-def tensor_to_tuple(tensor: Tensor) -> Tuple[float, int, np.ndarray]:
+
+def tensor_to_tuple(tensor: Tensor) -> Tuple[int, float, int, np.ndarray]:
+    """Convert a Tensor to (seq, ts_sec, channel_id, waveform)."""
     ts_sec = tensor.timestamp_ns / 1e9
 
     data_bytes = tensor.data
     if tensor.endianness == Tensor.Endianness.TENSOR_BIG_ENDIAN:
         fmt = f">{len(data_bytes) // 4}f"
-        waveform = np.array(struct.unpack(fmt, data_bytes), dtype=np.float32)
+        samples = np.array(struct.unpack(fmt, data_bytes), dtype=np.float32)
     else:
-        waveform = np.frombuffer(data_bytes, dtype=np.float32)
+        samples = np.frombuffer(data_bytes, dtype=np.float32)
 
-    ch_id = int(waveform[0]) + 1  # 1-based
-    return ts_sec, ch_id, waveform[1:]
+    seq = int(samples[0])
+    ch_id = int(samples[1]) + 1  # 1-based in GUI
+    waveform = samples[2:]
+
+    return seq, ts_sec, ch_id, waveform
 
 
 # --------------------------------------------------------------------------------------
 # Worker thread – receives tap data and dumps JSONL
 # --------------------------------------------------------------------------------------
+
 
 class ReceiverThread(threading.Thread):
     def __init__(self, tap: Tap, outfile: Path, queue_max=20000):
@@ -66,7 +76,15 @@ class ReceiverThread(threading.Thread):
         self._out = outfile.open("w", buffering=1)
         self._queue: deque[Tuple[float, int, np.ndarray]] = deque(maxlen=queue_max)
         self._lock = threading.Lock()
+        self._stats_lock = threading.Lock()
         self._stop_event = threading.Event()
+
+        # Stats bookkeeping
+        self._last_seq: int | None = None
+        self._seq_mod = 2**24  # sequence wrap-around
+        self._dropped_total = 0
+        self._received_total = 0
+        self._bw_samples: deque[tuple[float, int]] = deque()
 
     def run(self):
         flush_every = 500  # disk flush interval
@@ -80,14 +98,32 @@ class ReceiverThread(threading.Thread):
                 continue
 
             tensor_msg.ParseFromString(raw)
-            tup = tensor_to_tuple(tensor_msg)
+            seq, ts_sec, ch_id, wf = tensor_to_tuple(tensor_msg)
 
-            # Enqueue for GUI
+            # ---------------------- stats update ----------------------
+            now = time.time()
+            with self._stats_lock:
+                # Sequence-based loss detection
+                if self._last_seq is not None:
+                    expected = (self._last_seq + 1) % self._seq_mod
+                    if seq != expected:
+                        gap = (seq - expected) % self._seq_mod
+                        self._dropped_total += gap
+                self._last_seq = seq
+
+                self._received_total += 1
+
+                # Bandwidth window (1-s sliding)
+                self._bw_samples.append((now, len(raw)))
+                while self._bw_samples and now - self._bw_samples[0][0] > 1.0:
+                    self._bw_samples.popleft()
+
+            # ---------------------- GUI queue -------------------------
             with self._lock:
-                self._queue.append(tup)
+                self._queue.append((ts_sec, ch_id, wf))
 
-            # Persist
-            self._out.write(json.dumps([tup[0], tup[1], tup[2].tolist()]) + "\n")
+            # Persist raw data (no seq)
+            self._out.write(json.dumps([ts_sec, ch_id, wf.tolist()]) + "\n")
             events_since_flush += 1
             if events_since_flush >= flush_every:
                 self._out.flush()
@@ -96,7 +132,9 @@ class ReceiverThread(threading.Thread):
     # --------------------------------------------------
     def pop_batch(self, max_items=2000):
         with self._lock:
-            batch = [self._queue.popleft() for _ in range(min(max_items, len(self._queue)))]
+            batch = [
+                self._queue.popleft() for _ in range(min(max_items, len(self._queue)))
+            ]
         return batch
 
     def queue_size(self) -> int:
@@ -112,12 +150,29 @@ class ReceiverThread(threading.Thread):
         self._out.flush()
         self._out.close()
 
+    # --------------------------------------------------
+    def get_stats(self) -> Tuple[float, float]:
+        """Return (drop_pct [0-1], bandwidth_mbps)."""
+        with self._stats_lock:
+            total = self._received_total + self._dropped_total
+            drop_pct = (self._dropped_total / total) if total else 0.0
+
+            total_bytes = sum(b for _, b in self._bw_samples)
+            bandwidth_mbps = (total_bytes * 8) / 1e6  # bytes -> bits -> Mbps
+
+        return drop_pct, bandwidth_mbps
+
 
 # --------------------------------------------------------------------------------------
-# GUI setup
+# GUI setup (one persistent PlotDataItem per channel)
 # --------------------------------------------------------------------------------------
 
-def build_gui() -> tuple[pg.GraphicsLayoutWidget, dict[int, pg.PlotItem]]:
+
+def build_gui() -> tuple[
+    pg.GraphicsLayoutWidget,
+    dict[int, pg.PlotItem],
+    dict[int, pg.PlotDataItem],
+]:
     bg = (34, 34, 34)
     pg.setConfigOption("background", bg)
     pg.setConfigOption("foreground", "w")
@@ -127,6 +182,7 @@ def build_gui() -> tuple[pg.GraphicsLayoutWidget, dict[int, pg.PlotItem]]:
     w = pg.GraphicsLayoutWidget(title="Live spike waveforms (10-s windows)")
 
     plots: dict[int, pg.PlotItem] = {}
+    curves: dict[int, pg.PlotDataItem] = {}
 
     n_rows = n_cols = 10
     ch_to_pos = {}
@@ -153,21 +209,43 @@ def build_gui() -> tuple[pg.GraphicsLayoutWidget, dict[int, pg.PlotItem]]:
 
             plot = w.addPlot(row=r, col=c)
             plot.setMenuEnabled(False)
-            plot.hideAxis('bottom')
-            plot.hideAxis('left')
-            plot.setYRange(-200, 200)
-            plot.setXRange(0, 49)  # waveform length – 1
-            plot.setTitle(f"{next(ch for ch, pos in ch_to_pos.items() if pos == (r, c))}", color='w', size="8pt")
-            # Add a white border around each ViewBox for visual separation
-            plot.getViewBox().setBorder({'color': (200, 200, 200), 'width': 1})
-            plots[next(ch for ch, pos in ch_to_pos.items() if pos == (r, c))] = plot
+            plot.hideAxis("bottom")
+            plot.hideAxis("left")
 
-    return w, plots
+            # Fixed y-axis with no autorange and no visible buttons (removes the "A").
+            plot.setYRange(-250, 200, padding=0)
+            plot.disableAutoRange(axis="y")
+            plot.hideButtons()
+
+            plot.setXRange(0, 49)  # waveform length – 1
+            plot.setTitle(
+                f"{next(ch for ch, pos in ch_to_pos.items() if pos == (r, c))}",
+                color="w",
+                size="8pt",
+            )
+
+            # Add a white border around each ViewBox for visual separation
+            plot.getViewBox().setBorder({"color": (200, 200, 200), "width": 1})
+
+            # Pre-create a single PlotDataItem that will hold *all* spikes for this
+            # channel.  Using connect="finite" allows us to insert np.nan between
+            # successive waveforms so they are not joined.
+            curve = pg.PlotDataItem([], [], pen=WHITE_PEN, connect="finite")
+            plot.addItem(curve)
+
+            cid = next(ch for ch, pos in ch_to_pos.items() if pos == (r, c))
+            plots[cid] = plot
+            curves[cid] = curve
+
+    # Note: column widths will be adjusted dynamically in the main loop
+
+    return w, plots, curves
 
 
 # --------------------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------------------
+
 
 def main():
     args = parse_args()
@@ -182,20 +260,35 @@ def main():
     rx.start()
 
     app = QtWidgets.QApplication([])
-    win, plot_map = build_gui()
-    win.showMaximized()
+    win, plot_map, curve_map = build_gui()
+    # Display the window as a square rather than maximised to fill the screen.
+    # A fixed size gives a more consistent layout across monitors.
+    win.resize(1200, 1000)  # width, height in pixels – tweak as desired
+    win.show()
 
-    # Per-channel buffers (cleared every 10 s window)
-    buffers: dict[int, list[np.ndarray]] = defaultdict(list)
+    # ------------------------------------------------------------------
+    # Per-channel storage for waveform data (10-s rolling window)
+    # For each channel we keep two Python lists of floats.  Each waveform is
+    # appended followed by a NaN so that lines are not connected across
+    # spikes.  The lists are converted to numpy once per GUI update.
+    # ------------------------------------------------------------------
 
-    # Constant pen used for all spikes (white, 1-px wide)
-    WHITE_PEN = pg.mkPen('w', width=1)
+    chan_x: dict[int, list[float]] = defaultdict(list)
+    chan_y: dict[int, list[float]] = defaultdict(list)
+
+    # X-axis template (filled after first spike when we know waveform length)
+    X_TEMPLATE: np.ndarray | None = None
 
     current_window_start: float | None = None
     first_ts: float | None = None
     elapsed_label = pg.LabelItem(justify="left")
     elapsed_label.setFixedWidth(90)  # prevent first column from expanding
     win.addItem(elapsed_label, row=0, col=0)
+
+    # Track latest stats to show under elapsed
+    last_stats_update = time.time()
+    last_drop: float | None = None
+    last_bw: float | None = None
 
     # ---------------------- tunables ----------------------
     # Rendered FPS for GUI (ms interval for timer)
@@ -210,44 +303,105 @@ def main():
 
     BACKLOG_THRESHOLD = 4000  # if queue grows beyond this, drain extra without plotting
 
+    # Cache last applied column width so we only resize when necessary
+    _last_col_width: int | None = None
+
+    def _update_column_widths():
+        """Ensure all columns have uniform width that follows window resizing."""
+        nonlocal _last_col_width
+        layout = win.ci.layout  # type: ignore[attr-defined]
+        # Divide available width evenly across 10 columns (guard against 0)
+        col_width = max(10, win.width() // 11)
+        if col_width != _last_col_width:
+            for c in range(10):
+                try:
+                    layout.setColumnFixedWidth(c, col_width)
+                except Exception:
+                    # If the Qt binding lacks this method, silently skip
+                    pass
+            _last_col_width = col_width
+
     def update_gui():
-        nonlocal current_window_start, first_ts
+        nonlocal current_window_start, first_ts, last_stats_update, last_drop, last_bw, X_TEMPLATE
+        # Keep grid columns at equal widths adaptive to any window resize
+        _update_column_widths()
+
         batch = rx.pop_batch(MAX_POP_PER_TICK)
         if not batch:
             return
 
         # If we are falling behind, quickly drain the surplus without rendering
         while rx.queue_size() > BACKLOG_THRESHOLD:
-            _ = rx.pop_batch(MAX_POP_PER_TICK)  # discard plotting, but keeps elapsed correct
+            _ = rx.pop_batch(
+                MAX_POP_PER_TICK
+            )  # discard plotting, but keeps elapsed correct
+
+        # Track which channels received new data this tick so we only call
+        # setData() for those.
+        touched: set[int] = set()
 
         for idx, (ts_sec, ch_id, wf) in enumerate(batch):
             if first_ts is None:
                 first_ts = ts_sec
+
+            # -------- 10-second rolling window reset -------------------
             if current_window_start is None or ts_sec >= current_window_start + 10.0:
-                # commit and clear
-                for cid, plot in plot_map.items():
-                    if buffers[cid]:
-                        plot.addItem(pg.PlotDataItem(np.vstack(buffers[cid])[:, 0],
-                                                     np.vstack(buffers[cid])[:, 1],
-                                                     pen=WHITE_PEN,
-                                                     connect="all"))
-                    buffers[cid].clear()
-                    plot.clear()  # clear old curves
+                for cid in list(chan_x):
+                    chan_x[cid].clear()
+                    chan_y[cid].clear()
+                    curve_map[cid].setData([], [])
                 current_window_start = int(ts_sec // 10) * 10.0
 
-            x = np.arange(wf.size, dtype=float)
-            if (idx % PLOT_SUBSAMPLE) == 0:
-                buffers[ch_id].append(np.column_stack((x, wf)))
+            # ---------------- prepare per-spike data -------------------
+            if (idx % PLOT_SUBSAMPLE) != 0:
+                continue  # subsampling
 
-        # update elapsed label
+            # Lazy-initialise the shared X template once we know waveform length.
+            if X_TEMPLATE is None:
+                X_TEMPLATE = np.arange(wf.size, dtype=np.float32)
+
+            # Append the waveform followed by a NaN gap so adjacent waveforms
+            # are not connected.
+            chan_x[ch_id].extend(X_TEMPLATE)
+            chan_x[ch_id].append(np.nan)
+
+            chan_y[ch_id].extend(wf.astype(np.float32))
+            chan_y[ch_id].append(np.nan)
+
+            touched.add(ch_id)
+
+        # Compose info label (elapsed + stats if available)
         if first_ts is not None and batch:
-            elapsed_label.setText(f"Elapsed: {batch[-1][0] - first_ts:0.1f} s")
+            elapsed_sec = batch[-1][0] - first_ts
+        else:
+            elapsed_sec = 0.0
 
-        # Draw incremental segments quickly for immediate feedback (respect subsample)
-        for cid in buffers:
-            if buffers[cid]:
-                seg = buffers[cid][-1]
-                plot_map[cid].plot(seg[:, 0], seg[:, 1], pen=WHITE_PEN)
+        # ------------------ stats refresh ------------------
+        if time.time() - last_stats_update >= 1.0:
+            last_drop, last_bw = rx.get_stats()
+            last_stats_update = time.time()
+
+        # Update main label text each GUI tick
+        text_lines = [f"Elapsed: {elapsed_sec:0.1f} s"]
+        if last_drop is not None:
+            text_lines.extend(
+                [
+                    f"Drop: {last_drop*100:5.2f}%",
+                    f"BW: {last_bw:5.2f} Mbps",
+                ]
+            )
+
+        elapsed_label.setText("<br/>".join(text_lines))
+
+        # Update only the channels that received new data this tick.
+        for cid in touched:
+            if chan_x[cid]:
+                curve_map[cid].setData(
+                    np.asarray(chan_x[cid], dtype=np.float32),
+                    np.asarray(chan_y[cid], dtype=np.float32),
+                    pen=WHITE_PEN,
+                    connect="finite",
+                )
 
     timer = QtCore.QTimer()
     timer.timeout.connect(update_gui)
@@ -271,4 +425,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    main()

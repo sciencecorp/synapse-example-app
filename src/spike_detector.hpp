@@ -90,6 +90,9 @@ class SpikeDetectorApp : public synapse::App {
 
   const float max_amplitude_positive_ = 200.0f;  // µV
   const float max_amplitude_negative_ = -250.0f; // µV
+
+  // Monotonically increasing sequence number for each published spike (wraps at 2^32)
+  uint32_t spike_seq_ = 0;
 };
 
 }  // namespace app

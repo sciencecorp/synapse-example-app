@@ -96,8 +96,7 @@ namespace app
         for (size_t ch = 0; ch < channel_count; ++ch)
         {
           // Convert raw counts to microvolts (Blackrock data units: 0.25 µV per count)
-          const float sample_uV    = static_cast<float>(data_in[ch]) * 0.25f;
-          float filtered_sample = bandpass_filters_[ch]->filter(sample_uV);
+          float filtered_sample = bandpass_filters_[ch]->filter(data_in[ch]);
           filtered_data[ch].push_back(filtered_sample);
         }
       }
@@ -283,13 +282,14 @@ namespace app
               // Prepare Tensor
               synapse::Tensor tensor;
               tensor.set_timestamp_ns(static_cast<uint64_t>(bin_start_timestamp_ns + global_idx * sample_period_ns));
-              tensor.mutable_shape()->Add(waveform_size_ + 1);  // channel + waveform
+              tensor.mutable_shape()->Add(waveform_size_ + 2);  // seq + channel + waveform
               tensor.set_dtype(synapse::Tensor_DType_DT_FLOAT);
               tensor.set_endianness(synapse::Tensor_Endianness_TENSOR_LITTLE_ENDIAN);
 
               std::vector<float> payload;
-              payload.reserve(waveform.size() + 1);
-              payload.push_back(static_cast<float>(ch));
+              payload.reserve(waveform.size() + 2);
+              payload.push_back(static_cast<float>(spike_seq_++));  // sequence number
+              payload.push_back(static_cast<float>(ch));            // channel id
               payload.insert(payload.end(), waveform.begin(), waveform.end());
 
               const char* data_ptr = reinterpret_cast<const char*>(payload.data());
