@@ -24,3 +24,8 @@ message ExampleAppConfig {
   // Cursor control channels to use, we expect there to be four channels
   repeated int32 cursor_channels = 8;
 }
+
+message ResetRequest {
+  // Demonstrate the ability to change runtime values
+  bool reset = 1;
+}

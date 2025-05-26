@@ -85,5 +85,8 @@ class FixedWeightDecoder : public synapse::App {
   std::pair<float, float> calculate_cursor_position(const std::vector<uint32_t>& spike_counts);
 
   bool validate_configuration(const app::ExampleAppConfig& config);
+
+  // If we receive a reset request, perform a reset
+  void perform_reset();
 };
 }  // namespace app

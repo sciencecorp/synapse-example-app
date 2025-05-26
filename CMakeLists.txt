@@ -21,7 +21,7 @@ find_package(Protobuf REQUIRED)
 find_package(spdlog REQUIRED CONFIG)
 find_package(iir REQUIRED CONFIG)
 
-if(USE_LOCAL_SDK)
+if(true)
     if(NOT LOCAL_SDK_PATH)
         message(FATAL_ERROR "USE_LOCAL_SDK is ON but LOCAL_SDK_PATH is not set")
     endif()

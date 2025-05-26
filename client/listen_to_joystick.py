@@ -15,6 +15,7 @@ import numpy as np
 from synapse.api.datatype_pb2 import Tensor
 from synapse.client.taps import Tap
 
+from proto.example_app_pb2 import ExampleAppConfig
 
 def parse_args() -> argparse.Namespace:
     """CLI argument parser."""

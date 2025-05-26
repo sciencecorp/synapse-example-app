@@ -16,12 +16,19 @@ FixedWeightDecoder::FixedWeightDecoder() : publish_rate_limiter_(kPublishRateSec
 
 bool FixedWeightDecoder::setup() {
   // Make sure our app configuration is valid
-  if (!get_app_parameters(
-          [this](const app::ExampleAppConfig& config) { return validate_configuration(config); },
-          configuration_)) {
-    spdlog::error("Failed to validate app parameters from app configuration");
-    return false;
-  }
+  // if (!get_app_parameters(
+  //         [this](const app::ExampleAppConfig& config) { return validate_configuration(config); },
+  //         configuration_)) {
+  //   spdlog::error("Failed to validate app parameters from app configuration");
+  //   return false;
+  // }
+
+  configuration_.set_window_size(5);
+  configuration_.set_max_expected_rate(10.0);
+  configuration_.set_low_cutoff_hz(200.0);
+  configuration_.set_high_cutoff_hz(5000.0);
+  configuration_.set_spike_threshold_uv(50.0);
+  configuration_.set_refractory_period_us(1000);
 
   const uint32_t broadband_node_id = 1;
   if (!setup_reader(broadband_node_id)) {
@@ -32,6 +39,15 @@ bool FixedWeightDecoder::setup() {
   // Setup our output tap
   if (!create_tap<synapse::Tensor>("joystick_out")) {
     spdlog::warn("Failed to create tap for joystick out");
+    return false;
+  }
+
+  // Create a consumer tap for us to update our configuration
+  if (!create_consumer_tap<app::ResetRequest>("reset_in", [this](const app::ResetRequest& request) {
+        spdlog::info("Got a reset request");
+        perform_reset();
+      })) {
+    spdlog::warn("Failed to create consumer tap for reset in");
     return false;
   }
 
@@ -173,7 +189,7 @@ void FixedWeightDecoder::main() {
     output_tensor.set_endianness(synapse::Tensor_Endianness_TENSOR_LITTLE_ENDIAN);
 
     // Use the calculated cursor position instead of raw data values
-    output_tensor.set_data(synapse::pack_tensor_data({cursor_x, cursor_y}));
+    // output_tensor.set_data(synapse::pack_tensor_data({cursor_x, cursor_y}));
 
     const auto current_time_ns = synapse::get_steady_clock_now();
     output_tensor.set_timestamp_ns(current_time_ns.count());
@@ -189,7 +205,7 @@ void FixedWeightDecoder::main() {
       stop_profile("full_loop");
 
       // We can also get a debug print of the output
-      print_profile("full_loop");
+      // print_profile("full_loop");
     }
 
     // You can sleep here if you want,
@@ -398,6 +414,11 @@ bool FixedWeightDecoder::validate_configuration(const app::ExampleAppConfig& con
   }
 
   return true;
+}
+
+void FixedWeightDecoder::perform_reset() {
+  spdlog::info("Got a reset request");
+  filters_initialized_ = false;
 }
 
 }  // namespace app
