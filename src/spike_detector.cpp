@@ -105,6 +105,9 @@ namespace app
       update_running_rms(filtered_data);
       const uint64_t bin_start_ts_ns = frames.front().timestamp_ns();
       detect_and_publish(filtered_data, bin_start_ts_ns);
+
+      // Clear processed frames so that next iteration starts fresh.
+      frames.clear();
     }
   }
 
@@ -112,16 +115,18 @@ namespace app
                                            float bin_size_ms)
   {
     const uint64_t target_span_ns = static_cast<uint64_t>(bin_size_ms * 1e6);
-    frames.clear();
-
-    uint64_t first_ts_ns = 0;
+    uint64_t first_ts_ns = frames.empty() ? 0 : frames.front().timestamp_ns();
 
     while (node_running_)
     {
       auto multipart = data_reader_->receive_multipart();
       if (multipart.empty())
       {
-        return false;  // No data right now – let caller sleep.
+        // No new data available right now – small sleep before retrying so we
+        // don't spin-lock the CPU, but crucially *continue* accumulating any
+        // frames we already have instead of discarding them.
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+        continue;
       }
 
       frames.reserve(frames.size() + multipart.size());
@@ -202,7 +207,7 @@ namespace app
   }
 
   void SpikeDetectorApp::detect_and_publish(const std::vector<std::vector<float>>& filtered_data,
-                                            uint64_t bin_start_timestamp_ns)
+                                            uint64_t bin_start_ts_ns)
   {
     const double sample_period_ns = 1e9 / sample_rate_hz_;
 
@@ -279,21 +284,30 @@ namespace app
 
             if (valid_spike)
             {
-              // Prepare Tensor
+              // ------------------------------------------------------------------
+              // Accurate spike timestamp – avoid double-counting.
+              // Use first-frame timestamp plus within-bin offset (i * period).
+              // ------------------------------------------------------------------
+
+              uint64_t ts_ns = bin_start_ts_ns + static_cast<uint64_t>(i * sample_period_ns);
+
               synapse::Tensor tensor;
-              tensor.set_timestamp_ns(static_cast<uint64_t>(bin_start_timestamp_ns + global_idx * sample_period_ns));
-              tensor.mutable_shape()->Add(waveform_size_ + 2);  // seq + channel + waveform
-              tensor.set_dtype(synapse::Tensor_DType_DT_FLOAT);
+              tensor.set_timestamp_ns(ts_ns);
+              tensor.set_dtype(synapse::Tensor_DType_DT_INT16);
               tensor.set_endianness(synapse::Tensor_Endianness_TENSOR_LITTLE_ENDIAN);
 
-              std::vector<float> payload;
-              payload.reserve(waveform.size() + 2);
-              payload.push_back(static_cast<float>(spike_seq_++));  // sequence number
-              payload.push_back(static_cast<float>(ch));            // channel id
+              std::vector<int16_t> payload;
+              payload.reserve(waveform.size() + 2); // seq + channel + waveform
+              payload.push_back(static_cast<int16_t>(spike_seq_++));  // sequence number
+              payload.push_back(static_cast<int16_t>(ch));            // channel id
               payload.insert(payload.end(), waveform.begin(), waveform.end());
 
+              // Set tensor shape (seq + channel + waveform)
+              tensor.mutable_shape()->Clear();
+              tensor.mutable_shape()->Add(waveform_size_ + 2);
+
               const char* data_ptr = reinterpret_cast<const char*>(payload.data());
-              tensor.set_data(std::string(data_ptr, payload.size() * sizeof(float)));
+              tensor.set_data(std::string(data_ptr, payload.size() * sizeof(int16_t)));
 
               if (!publish_tap("spike_waveforms", tensor))
               {

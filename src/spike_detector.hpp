@@ -68,7 +68,7 @@ class SpikeDetectorApp : public synapse::App {
   /* ------------------------- Spike detection ----------------------------- */
   std::atomic<bool> detectors_ready_{false};
 
-  // Match offline spike detector which uses 4 × RMS (operating in µV units)
+  // Match offline spike detector which uses 3 × RMS (operating in µV units)
   const float threshold_std_   = 3.0f;        // N × RMS
   const uint32_t waveform_size_ = 50;         // samples per waveform
   const uint32_t half_wave_     = waveform_size_ / 2;
@@ -85,6 +85,7 @@ class SpikeDetectorApp : public synapse::App {
   void update_running_rms(const std::vector<std::vector<float>>& filtered_data);
 
   // Detect spikes in the current bin and publish them
+  // filtered_data: [channel][samples], bin_start_timestamp_ns: timestamp (ns)
   void detect_and_publish(const std::vector<std::vector<float>>& filtered_data,
                           uint64_t bin_start_timestamp_ns);
 
