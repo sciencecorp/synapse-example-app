@@ -1,6 +1,7 @@
 *.pb.cc
 *.pb.h
 *_pb2.py
+*.pyc
 
 .cache/
 .vscode/
