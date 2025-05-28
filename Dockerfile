@@ -109,7 +109,7 @@ RUN cd "${VCPKG_ROOT}" && \
 # -----------------------------------------------------------------------------
 # Install Synapse SDK from internal repository (same steps on both)
 # -----------------------------------------------------------------------------
-ARG SDK_VERSION=0.4.2
+ARG SDK_VERSION=0.4.4
 COPY keys/science-repo-public.asc /usr/share/keyrings/scifi-repo-science-public.asc
 RUN set -eux; \
     apt-get update && apt-get install -y --no-install-recommends ca-certificates; \

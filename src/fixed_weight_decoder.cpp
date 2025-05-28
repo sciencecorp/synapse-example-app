@@ -35,14 +35,17 @@ bool FixedWeightDecoder::setup() {
     return false;
   }
 
-  // Enable performance monitoring
-  function_profiler_manager_.add("full_loop");
+  if (configuration_.enable_function_profiling()) {
+    // Enable performance monitoring
+    function_profiler_manager_.add("full_loop");
 
-  // Publish loop stats every 1 second
-  if (!enable_function_profiling(std::chrono::seconds(1))) {
-    spdlog::error("Failed to enable function profile monitoring");
-    return false;
+    // Publish loop stats every 1 second
+    if (!enable_function_profiling(std::chrono::seconds(1))) {
+      spdlog::error("Failed to enable function profile monitoring");
+      return false;
+    }
   }
+
   return true;
 }
 
