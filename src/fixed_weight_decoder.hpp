@@ -36,26 +36,25 @@ class FixedWeightDecoder : public synapse::App {
   // We want to filter the incoming broadband data, so do so here
   std::atomic<bool> filters_initialized_{false};
 
-  // TODO(gilbert): This should probably be configurable?
-  const float low_cutoff_hz_ = 200.0;
-  const float high_cutoff_hz_ = 5000.0;
+  float low_cutoff_hz_ = 200.0;
+  float high_cutoff_hz_ = 5000.0;
   static constexpr int kSpectralFilterOrder = 2;
   std::vector<std::unique_ptr<synapse::BaseFilter>> bandpass_filters_;
 
   // Spike detection configuration and detectors
   std::atomic<bool> spike_detectors_initialized_{false};
-  const float spike_threshold_ = 50.0;          // Threshold in microvolts
-  const uint32_t waveform_size_ = 50;           // Total samples per waveform
-  const uint64_t refractory_period_us_ = 1000;  // 1ms refractory period
-  float sample_rate_hz_ = 30000.0;              // Will be updated during initialization
+  float spike_threshold_ = 50.0;          // Threshold in microvolts
+  uint32_t waveform_size_ = 50;           // Total samples per waveform
+  uint64_t refractory_period_us_ = 1000;  // 1ms refractory period
+  float sample_rate_hz_ = 30000.0;        // Will be updated during initialization
   std::vector<std::unique_ptr<synapse::BaseSpikeDetector>> spike_detectors_;
 
   // Collection of detected spikes
   std::vector<synapse::SpikeEvent*> detected_spikes_;
 
   // Spike binning and cursor control parameters
-  static constexpr int window_size_ = 5;  // Number of bins to use for firing rate estimation
-  static constexpr float max_expected_rate_ = 10.0f;  // For normalization
+  int window_size_ = 5;              // Number of bins to use for firing rate estimation
+  float max_expected_rate_ = 10.0f;  // For normalization
   std::deque<std::vector<uint32_t>>
       spike_count_window_;  // Window buffer to store binned spike counts
 
@@ -91,6 +90,6 @@ class FixedWeightDecoder : public synapse::App {
   bool validate_config(const synapse::ApplicationNodeConfig& configuration);
 
   // Parse the configuration
-  void parse_config(const synapse::ApplicationNodeConfig& configuration);
+  bool parse_config(const synapse::ApplicationNodeConfig& configuration);
 };
 }  // namespace app

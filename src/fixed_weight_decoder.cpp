@@ -24,6 +24,11 @@ bool FixedWeightDecoder::setup() {
     return false;
   }
 
+  if (!parse_config(application_config_)) {
+    spdlog::error("Failed to parse app config");
+    return false;
+  }
+
   const uint32_t broadband_node_id = 1;
   if (!setup_reader(broadband_node_id)) {
     spdlog::warn("Failed to set up reader for controller");
@@ -360,11 +365,78 @@ bool FixedWeightDecoder::initialize_cursor_channels(const size_t channel_count) 
 }
 
 bool FixedWeightDecoder::validate_config(const synapse::ApplicationNodeConfig& configuration) {
+  const auto& parameters = configuration.parameters();
+
+  if (!parameters.contains("low_cutoff_hz")) {
+    spdlog::error("low_cutoff_hz not found in configuration");
+    return false;
+  }
+
+  if (!parameters.contains("high_cutoff_hz")) {
+    spdlog::error("high_cutoff_hz not found in configuration");
+    return false;
+  }
+
+  if (!parameters.contains("spike_threshold_uv")) {
+    spdlog::error("spike_threshold_uv not found in configuration");
+    return false;
+  }
+
+  if (!parameters.contains("waveform_size")) {
+    spdlog::error("waveform_size not found in configuration");
+    return false;
+  }
+
+  if (!parameters.contains("refractory_period_us")) {
+    spdlog::error("refractory_period_us not found in configuration");
+    return false;
+  }
+
+  if (!parameters.contains("window_size")) {
+    spdlog::error("window_size not found in configuration");
+    return false;
+  }
+
+  if (!parameters.contains("max_expected_rate")) {
+    spdlog::error("max_expected_rate not found in configuration");
+    return false;
+  }
+
+  if (!parameters.contains("cursor_channels")) {
+    spdlog::error("cursor_channels not found in configuration");
+    return false;
+  }
+
   return true;
 }
 
-void FixedWeightDecoder::parse_config(const synapse::ApplicationNodeConfig& configuration) {
-  // TODO: Implement this
+bool FixedWeightDecoder::parse_config(const synapse::ApplicationNodeConfig& configuration) {
+  const auto& parameters = configuration.parameters();
+  try {
+    low_cutoff_hz_ = parameters.at("low_cutoff_hz").number_value();
+    high_cutoff_hz_ = parameters.at("high_cutoff_hz").number_value();
+    spike_threshold_ = parameters.at("spike_threshold_uv").number_value();
+    waveform_size_ = parameters.at("waveform_size").number_value();
+    refractory_period_us_ = parameters.at("refractory_period_us").number_value();
+    window_size_ = parameters.at("window_size").number_value();
+    max_expected_rate_ = parameters.at("max_expected_rate").number_value();
+
+    const auto& cursor_channels = parameters.at("cursor_channels").list_value().values();
+    if (cursor_channels.size() != 4) {
+      spdlog::error("cursor_channels must be a list of 4 integers");
+      return false;
+    }
+
+    for (size_t i = 0; i < 4; ++i) {
+      cursor_channels_[i] = cursor_channels[i].number_value();
+    }
+
+    application_config_ = configuration;
+    return true;
+  } catch (const std::exception& e) {
+    spdlog::error("Failed to parse configuration: {}", e.what());
+    return false;
+  }
 }
 }  // namespace app
 
