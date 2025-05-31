@@ -432,6 +432,7 @@ bool FixedWeightDecoder::parse_config(const synapse::ApplicationNodeConfig& conf
     }
 
     application_config_ = configuration;
+    spdlog::info("Successfully parsed configuration: {}", application_config_.DebugString());
     return true;
   } catch (const std::exception& e) {
     spdlog::error("Failed to parse configuration: {}", e.what());
