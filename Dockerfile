@@ -98,7 +98,7 @@ RUN git clone https://github.com/microsoft/vcpkg.git "${VCPKG_ROOT}" && \
 
 # copy project-specific ports and manifest before installing
 COPY vcpkg.json "${VCPKG_ROOT}/vcpkg.json"
-COPY external "${VCPKG_ROOT}/external/"
+COPY external/sciencecorp/vcpkg "${VCPKG_ROOT}/external/sciencecorp/vcpkg"
 
 RUN cd "${VCPKG_ROOT}" && \
     ./vcpkg install \
@@ -128,4 +128,4 @@ ENV VCPKG_INSTALLED_DIR="${VCPKG_ROOT}/build/host/vcpkg_installed"
 # Final workspace & entrypoint
 # -----------------------------------------------------------------------------
 WORKDIR /home/workspace
-CMD ["/bin/bash"] 
+CMD ["/bin/bash"]
