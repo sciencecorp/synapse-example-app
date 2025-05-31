@@ -61,6 +61,9 @@ class FixedWeightDecoder : public synapse::App {
   // We will select 4 channels randomly for cursor control
   std::array<size_t, 4> cursor_channels_ = {0, 7, 16, 30};
 
+  // Should function profiling be enabled?
+  bool enable_function_profiling_ = false;
+
   // Waits until a set of broadband frames are read from the node
   // Returns false if there was an error reading
   bool wait_for_frames(std::vector<synapse::BroadbandFrame>& frames, const float bin_size_ms);

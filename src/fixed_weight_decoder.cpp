@@ -41,14 +41,16 @@ bool FixedWeightDecoder::setup() {
     return false;
   }
 
-  // Enable performance monitoring
-  function_profiler_manager_.add("full_loop");
-
-  // Publish loop stats every 1 second
-  if (!enable_function_profiling(std::chrono::seconds(1))) {
-    spdlog::error("Failed to enable function profile monitoring");
-    return false;
+  if (enable_function_profiling_) {
+    // Enable performance monitoring
+    function_profiler_manager_.add("full_loop");
+    // Publish loop stats every 1 second
+    if (!enable_function_profiling(std::chrono::seconds(1))) {
+      spdlog::error("Failed to enable function profile monitoring");
+      return false;
+    }
   }
+
   return true;
 }
 
@@ -407,6 +409,11 @@ bool FixedWeightDecoder::validate_config(const synapse::ApplicationNodeConfig& c
     return false;
   }
 
+  if (!parameters.contains("enable_function_profiling")) {
+    spdlog::error("enable_function_profiling not found in configuration");
+    return false;
+  }
+
   return true;
 }
 
@@ -420,6 +427,7 @@ bool FixedWeightDecoder::parse_config(const synapse::ApplicationNodeConfig& conf
     refractory_period_us_ = parameters.at("refractory_period_us").number_value();
     window_size_ = parameters.at("window_size").number_value();
     max_expected_rate_ = parameters.at("max_expected_rate").number_value();
+    enable_function_profiling_ = parameters.at("enable_function_profiling").bool_value();
 
     const auto& cursor_channels = parameters.at("cursor_channels").list_value().values();
     if (cursor_channels.size() != 4) {
