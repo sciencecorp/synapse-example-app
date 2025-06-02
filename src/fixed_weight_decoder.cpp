@@ -29,6 +29,15 @@ bool FixedWeightDecoder::setup() {
     return false;
   }
 
+  // Setup a consumer tap to listen for reset commands
+  const auto reset_tap_ret = create_consumer_tap<google::protobuf::ListValue>(
+      "set_cursor_channels",
+      [this](const google::protobuf::ListValue& message) { handle_update_request(message); });
+  if (!reset_tap_ret) {
+    spdlog::error("Failed to set up consumer tap for set_cursor_channels");
+    return false;
+  }
+
   const uint32_t broadband_node_id = 1;
   if (!setup_reader(broadband_node_id)) {
     spdlog::warn("Failed to set up reader for controller");
@@ -346,15 +355,6 @@ bool FixedWeightDecoder::initialize_cursor_channels(const size_t channel_count) 
     return false;
   }
 
-  // Select four random channels
-  // std::vector<size_t> all_channels(channel_count);
-  // std::iota(all_channels.begin(), all_channels.end(), 0);
-
-  // // Randomly sample 4 channels
-  // std::random_device rd;
-  // std::mt19937 gen(rd());
-  // std::sample(all_channels.begin(), all_channels.end(), cursor_channels_.begin(), 4, gen);
-
   std::stringstream ss;
   ss << "Using [";
   for (const auto& channel : cursor_channels_) {
@@ -445,6 +445,44 @@ bool FixedWeightDecoder::parse_config(const synapse::ApplicationNodeConfig& conf
   } catch (const std::exception& e) {
     spdlog::error("Failed to parse configuration: {}", e.what());
     return false;
+  }
+}
+
+void FixedWeightDecoder::handle_update_request(const google::protobuf::ListValue& message) {
+  try {
+    // Just handle the configuration where we want to change the cursor channels
+    // Need to make sure we have exactly four channels
+    const auto& values = message.values();
+    if (values.size() != 4) {
+      spdlog::warn("Got a reset request, but didn't see the current number of channels: {}",
+                   message.DebugString());
+      return;
+    }
+
+    // Make sure they are in a good range
+    for (const auto& value : values) {
+      if (!value.has_number_value()) {
+        spdlog::warn("Expected number value for cursor channel");
+        return;
+      }
+
+      const auto channel = value.number_value();
+      if (channel < 0 || channel >= 32) {
+        spdlog::warn("Got an out of range joystick channel: {}", channel);
+        return;
+      }
+    }
+
+    spdlog::info("Got a valid update request, setting new cursor channels");
+    {
+      std::lock_guard<std::mutex> lock(cursor_channel_mutex_);
+      for (size_t i = 0; i < 4; ++i) {
+        cursor_channels_[i] = values[i].number_value();
+      }
+    }
+    initialize_cursor_channels(cursor_channels_.size());
+  } catch (const std::exception& e) {
+    spdlog::error("Got a reset request, but had trouble parsing. Why: {}", e.what());
   }
 }
 }  // namespace app
