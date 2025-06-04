@@ -27,13 +27,13 @@ if(USE_LOCAL_SDK)
         message(FATAL_ERROR "USE_LOCAL_SDK is ON but LOCAL_SDK_PATH is not set")
     endif()
     message(STATUS "Using local SDK from: ${LOCAL_SDK_PATH}")
-    
+
     set(SDK_LIB_PATH "${LOCAL_SDK_PATH}")
     set(SDK_LIB_NAME "synapse-app-sdk")
     link_directories(${SDK_LIB_PATH})
-    
+
     set(SYNAPSE_APP_SDK_LIB ${SDK_LIB_NAME})
-    
+
     include_directories("${LOCAL_SDK_PATH}/include")
 else()
     find_library(SYNAPSE_APP_SDK_LIB NAMES synapse-app-sdk libsynapse-app-sdk.so.0.1.0)
@@ -48,6 +48,7 @@ add_executable(synapse-example-app
 generate_protobufs(
     TARGET synapse-example-app
     OUT_PROTO_DIR PROTO_OUT_DIR
+    PROTO_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/external/sciencecorp/synapse-api"
 )
 
 # Be strict about the standard
@@ -61,7 +62,7 @@ set_target_properties(synapse-example-app PROPERTIES
 target_include_directories(synapse-example-app
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src
-   PRIVATE 
+   PRIVATE
         ${PROTO_OUT_DIR}
 )
 

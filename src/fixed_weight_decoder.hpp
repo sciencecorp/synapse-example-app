@@ -12,79 +12,87 @@
 #include "api/datatype.pb.h"
 #include "api/nodes/broadband_source.pb.h"
 
-namespace app
-{
-  // 10 hz
-  constexpr auto kPublishRateSec = 1.0 / 10.0;
-  class FixedWeightDecoder : public synapse::App
-  {
-  public:
-    FixedWeightDecoder();
+namespace app {
+// 10 hz
+constexpr auto kPublishRateSec = 1.0 / 10.0;
+class FixedWeightDecoder : public synapse::App {
+ public:
+  FixedWeightDecoder();
 
-    virtual bool setup() override;
+  virtual bool setup() override;
 
-  protected:
-    virtual void main() override;
+ protected:
+  virtual void main() override;
 
-  private:
-    // Use this to detect if there is frame drops
-    uint64_t last_sequence_number_ = 0;
+ private:
+  synapse::ApplicationNodeConfig application_config_;
 
-    // A timer to provide a consistent publishing cadence for joystick commands
-    synapse::Timer publish_rate_limiter_;
+  // Use this to detect if there is frame drops
+  uint64_t last_sequence_number_ = 0;
 
-    // We want to filter the incoming broadband data, so do so here
-    std::atomic<bool> filters_initialized_{false};
+  // A timer to provide a consistent publishing cadence for joystick commands
+  synapse::Timer publish_rate_limiter_;
 
-    // TODO(gilbert): This should probably be configurable?
-    const float low_cutoff_hz_ = 200.0;
-    const float high_cutoff_hz_ = 5000.0;
-    static constexpr int kSpectralFilterOrder = 2;
-    std::vector<std::unique_ptr<synapse::BaseFilter>> bandpass_filters_;
+  // We want to filter the incoming broadband data, so do so here
+  std::atomic<bool> filters_initialized_{false};
 
-    // Spike detection configuration and detectors
-    std::atomic<bool> spike_detectors_initialized_{false};
-    const float spike_threshold_ = 50.0;         // Threshold in microvolts
-    const uint32_t waveform_size_ = 50;          // Total samples per waveform
-    const uint64_t refractory_period_us_ = 1000; // 1ms refractory period
-    float sample_rate_hz_ = 30000.0;             // Will be updated during initialization
-    std::vector<std::unique_ptr<synapse::BaseSpikeDetector>> spike_detectors_;
+  float low_cutoff_hz_ = 200.0;
+  float high_cutoff_hz_ = 5000.0;
+  static constexpr int kSpectralFilterOrder = 2;
+  std::vector<std::unique_ptr<synapse::BaseFilter>> bandpass_filters_;
 
-    // Collection of detected spikes
-    std::vector<synapse::SpikeEvent *> detected_spikes_;
+  // Spike detection configuration and detectors
+  std::atomic<bool> spike_detectors_initialized_{false};
+  float spike_threshold_ = 50.0;          // Threshold in microvolts
+  uint32_t waveform_size_ = 50;           // Total samples per waveform
+  uint64_t refractory_period_us_ = 1000;  // 1ms refractory period
+  float sample_rate_hz_ = 30000.0;        // Will be updated during initialization
+  std::vector<std::unique_ptr<synapse::BaseSpikeDetector>> spike_detectors_;
 
-    // Spike binning and cursor control parameters
-    static constexpr int window_size_ = 5;             // Number of bins to use for firing rate estimation
-    static constexpr float max_expected_rate_ = 10.0f; // For normalization
-    std::deque<std::vector<uint32_t>>
-        spike_count_window_; // Window buffer to store binned spike counts
+  // Collection of detected spikes
+  std::vector<synapse::SpikeEvent*> detected_spikes_;
 
-    // We will select 4 channels randomly for cursor control
-    std::array<size_t, 4> cursor_channels_ = {0, 7, 16, 30};
+  // Spike binning and cursor control parameters
+  int window_size_ = 5;              // Number of bins to use for firing rate estimation
+  float max_expected_rate_ = 10.0f;  // For normalization
+  std::deque<std::vector<uint32_t>>
+      spike_count_window_;  // Window buffer to store binned spike counts
 
-    // Waits until a set of broadband frames are read from the node
-    // Returns false if there was an error reading
-    bool wait_for_frames(std::vector<synapse::BroadbandFrame> &frames, const float bin_size_ms);
+  // We will select 4 channels randomly for cursor control
+  std::array<size_t, 4> cursor_channels_ = {0, 7, 16, 30};
 
-    // If not zero, we dropped some frames, determine what to do
-    int detect_dropped_frames(const uint64_t last_sequence_number,
-                              const uint64_t current_sequence_number);
+  // Should function profiling be enabled?
+  bool enable_function_profiling_ = false;
 
-    // Randomly select channels to use for cursor control
-    bool initialize_cursor_channels(const size_t channel_count);
+  // Waits until a set of broadband frames are read from the node
+  // Returns false if there was an error reading
+  bool wait_for_frames(std::vector<synapse::BroadbandFrame>& frames, const float bin_size_ms);
 
-    // Before starting, set up our filters.
-    // We can use the first broadband frame to do this initialization
-    void initialize_filters(const size_t channel_count, const float sample_rate_hz,
-                            const float bin_size_ms);
+  // If not zero, we dropped some frames, determine what to do
+  int detect_dropped_frames(const uint64_t last_sequence_number,
+                            const uint64_t current_sequence_number);
 
-    // Initialize spike detectors for each channel
-    void initialize_spike_detectors(const size_t channel_count);
+  // Randomly select channels to use for cursor control
+  bool initialize_cursor_channels(const size_t channel_count);
 
-    // Clean up any allocated spike events
-    void cleanup_spike_events();
+  // Before starting, set up our filters.
+  // We can use the first broadband frame to do this initialization
+  void initialize_filters(const size_t channel_count, const float sample_rate_hz,
+                          const float bin_size_ms);
 
-    // Calculate cursor position from spike counts
-    std::pair<float, float> calculate_cursor_position(const std::vector<uint32_t> &spike_counts);
-  };
-} // namespace app
+  // Initialize spike detectors for each channel
+  void initialize_spike_detectors(const size_t channel_count);
+
+  // Clean up any allocated spike events
+  void cleanup_spike_events();
+
+  // Calculate cursor position from spike counts
+  std::pair<float, float> calculate_cursor_position(const std::vector<uint32_t>& spike_counts);
+
+  // Validate the configuration
+  bool validate_config(const synapse::ApplicationNodeConfig& configuration);
+
+  // Parse the configuration
+  bool parse_config(const synapse::ApplicationNodeConfig& configuration);
+};
+}  // namespace app

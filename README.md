@@ -27,7 +27,7 @@ Before beginning, make sure you have the following installed:
 The Synapse App development experience is currently supported for and tested on MacOS and Ubuntu Linux. Contact us if you have a different operating system you would like to use.
 
 ## Science Libraries
-We provide a C++ SDK that allows your app to take full advantage of the [SciFi](https://science.xyz/technologies/scifi/) hardware. 
+We provide a C++ SDK that allows your app to take full advantage of the [SciFi](https://science.xyz/technologies/scifi/) hardware.
 
 Additionally, we provide a Python client API that allows you to listen to your data using the Tap API.
 
@@ -56,7 +56,7 @@ Errors during the build should be self descriptive, but feel free to open an [is
 
 
 ### Deploying Your App
-With a built application, you can now deploy it to run on your device. This will build and package and install your application onto your synapse device. 
+With a built application, you can now deploy it to run on your device. This will build and package and install your application onto your synapse device.
 
 ```
 synapsectl -u "your-device-identifier" deploy <path to synapse-example-app>
@@ -121,4 +121,17 @@ To listen to joystick output:
 
 ```bash
 python3 ${REPO_ROOT}/client/listen_to_joystick.py --device-ip <your-device-ip>
+```
+
+## Development
+If you want, it is recommended to install and configure pre-commit to auto lint your files.
+
+```bash
+pip install pre-commit
+
+pre-commit install
+
+# Now this will be run when you commit
+# However, you can also run it manually like this
+pre-commit run
 ```
