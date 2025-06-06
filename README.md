@@ -117,11 +117,24 @@ for message in tap.stream():
 
 ```
 
-To listen to joystick output:
+## Client Examples
+
+### Listen to Joystick Output
+To listen to joystick output from the FixedWeightDecoder:
 
 ```bash
 python3 ${REPO_ROOT}/client/listen_to_joystick.py --device-ip <your-device-ip>
 ```
+
+### Update Cursor Channels
+To dynamically update which channels are used for cursor control:
+
+```bash
+python3 ${REPO_ROOT}/client/update_channels.py --device-ip <your-device-ip> --channels 0 1 2 3
+```
+
+This will send a message to the `set_cursor_channels` tap to update the four channels used for joystick control. The channels must be in the range 0-31.
+
 
 ## Development
 If you want, it is recommended to install and configure pre-commit to auto lint your files.
