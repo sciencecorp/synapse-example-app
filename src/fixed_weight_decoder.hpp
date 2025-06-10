@@ -12,6 +12,9 @@
 #include "api/datatype.pb.h"
 #include "api/nodes/broadband_source.pb.h"
 
+// For reset callbacks
+#include <google/protobuf/struct.pb.h>
+
 namespace app {
 // 10 hz
 constexpr auto kPublishRateSec = 1.0 / 10.0;
@@ -59,6 +62,7 @@ class FixedWeightDecoder : public synapse::App {
       spike_count_window_;  // Window buffer to store binned spike counts
 
   // We will select 4 channels randomly for cursor control
+  std::mutex cursor_channel_mutex_;
   std::array<size_t, 4> cursor_channels_ = {0, 7, 16, 30};
 
   // Should function profiling be enabled?
@@ -94,5 +98,11 @@ class FixedWeightDecoder : public synapse::App {
 
   // Parse the configuration
   bool parse_config(const synapse::ApplicationNodeConfig& configuration);
+
+  // If we get a message on our update configuration tap, handle it
+  // NOTE: if you are expecting frequent updates, you wouldn't handle the data in the callback
+  //       you would instead add the message to a queue and run a process_callback() in your main
+  //       loop
+  void handle_update_request(const google::protobuf::ListValue& message);
 };
 }  // namespace app
