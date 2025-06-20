@@ -112,9 +112,16 @@ RUN cd "${VCPKG_ROOT}" && \
 ARG SDK_VERSION=0.3.0
 COPY keys/science-repo-public.asc /usr/share/keyrings/scifi-repo-science-public.asc
 RUN set -eux; \
+    # Add the science repo that hosts synapse-app-sdk and make sure its key is trusted
     apt-get update && apt-get install -y --no-install-recommends ca-certificates; \
     echo "deb [signed-by=/usr/share/keyrings/scifi-repo-science-public.asc] https://pub-879bfa29e67b4cd6b0c78b0d4cc3aa59.r2.dev/scifi focal main" > /etc/apt/sources.list.d/repo-science.list; \
-    apt-get update && apt-get install -y synapse-app-sdk="${SDK_VERSION}"; \
+    if [ "${TARGETPLATFORM}" = "linux/amd64" ]; then \
+        apt-get update && \
+        apt-get install -y --no-install-recommends synapse-app-sdk:arm64; \
+    else \
+        apt-get update && \
+        apt-get install -y --no-install-recommends synapse-app-sdk; \
+    fi; \
     rm -rf /var/lib/apt/lists/*
 
 # -----------------------------------------------------------------------------
