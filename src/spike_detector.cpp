@@ -63,6 +63,7 @@ namespace app
         initialise_filters(channel_count, sample_rate_hz_);
         // Allocate per-channel detection state now that we know channel count.
         running_rms_.assign(channel_count, 1.0);
+        running_mean_.assign(channel_count, 0.0);
         sample_counter_.assign(channel_count, 0);
         last_spike_sample_idx_.assign(channel_count, 0);
         pre_buffers_.assign(channel_count, {});
@@ -82,23 +83,32 @@ namespace app
         continue;
       }
 
-      /* ----------------- Filter and collect samples for this bin ----------- */
-      const size_t channel_count = bandpass_filters_.size();
-      std::vector<std::vector<float>> filtered_data(channel_count);
-      for (auto& vec : filtered_data)
+      /* ----------------- Zero-phase filter and collect samples ------------ */
+      const size_t channel_count = first_frame.frame_data_size();
+
+      // Temporary container holding raw (µV) samples per channel for this bin.
+      std::vector<std::vector<float>> raw_data(channel_count);
+      for (auto& vec : raw_data)
       {
         vec.reserve(frames.size());
       }
 
+      // ---------- Gather raw samples -------------------------------------
       for (const auto& frame : frames)
       {
         const auto& data_in = frame.frame_data();
         for (size_t ch = 0; ch < channel_count; ++ch)
         {
-          // Convert raw counts to microvolts (Blackrock data units: 0.25 µV per count)
-          float filtered_sample = bandpass_filters_[ch]->filter(data_in[ch]);
-          filtered_data[ch].push_back(filtered_sample);
+          // Convert raw counts to microvolts (Blackrock units: 0.25 µV/count)
+          raw_data[ch].push_back(data_in[ch]);
         }
+      }
+
+      // ---------- Apply zero-phase band-pass filtering -------------------
+      std::vector<std::vector<float>> filtered_data(channel_count);
+      for (size_t ch = 0; ch < channel_count; ++ch)
+      {
+        filtered_data[ch] = zero_phase_filter(ch, raw_data[ch]);
       }
 
       /* --------------- Update RMS and run spike detection ------------------ */
@@ -328,6 +338,68 @@ namespace app
       // Update sample counter for this channel
       sample_counter_[ch] += samples.size();
     }
+  }
+
+  std::vector<float> SpikeDetectorApp::zero_phase_filter(size_t channel_idx, const std::vector<float>& samples)
+  {
+    if (samples.empty()) return {};
+
+    // Use reflection padding similar to scipy.signal.filtfilt.  Pad length must be
+    // less than the input length; we cap it at 150 samples (≈5 ms @ 30 kHz) or
+    // half the vector minus one if the bin is shorter.
+    const size_t pad_len = std::min<size_t>(150, (samples.size() > 2 ? samples.size() / 2 - 1 : 0));
+
+    // ----------------------------------------------------------------
+    // Build the padded vector using reflection (… 3 2 1 | 1 2 3 4 5 | 5 4 3 …)
+    // This removes the step at the boundaries and minimises start-up transients.
+    // ----------------------------------------------------------------
+    std::vector<float> padded;
+    padded.reserve(pad_len + samples.size() + pad_len);
+
+    // Front reflection: reverse of first pad_len samples (exclude the very first point)
+    for (size_t i = pad_len; i > 0; --i)
+    {
+      padded.push_back(samples[i - 1]);
+    }
+
+    // Real samples
+    padded.insert(padded.end(), samples.begin(), samples.end());
+
+    // Back reflection: reverse of last pad_len samples (exclude last point)
+    for (size_t i = 0; i < pad_len; ++i)
+    {
+      padded.push_back(samples[samples.size() - 2 - i]);
+    }
+
+    // ----------------------------------------------------------------
+    // Forward pass
+    // ----------------------------------------------------------------
+    auto forward_filter = synapse::create_bandpass_filter<kFilterOrder>(sample_rate_hz_, low_cutoff_hz_, high_cutoff_hz_);
+    std::vector<float> forward_out;
+    forward_out.reserve(padded.size());
+    for (float x : padded)
+    {
+      forward_out.push_back(forward_filter->filter(x));
+    }
+
+    // ----------------------------------------------------------------
+    // Reverse & backward pass
+    // ----------------------------------------------------------------
+    std::reverse(forward_out.begin(), forward_out.end());
+    auto backward_filter = synapse::create_bandpass_filter<kFilterOrder>(sample_rate_hz_, low_cutoff_hz_, high_cutoff_hz_);
+    std::vector<float> backward_out;
+    backward_out.reserve(forward_out.size());
+    for (float x : forward_out)
+    {
+      backward_out.push_back(backward_filter->filter(x));
+    }
+    std::reverse(backward_out.begin(), backward_out.end());
+
+    // ----------------------------------------------------------------
+    // Remove padding and return the central (unpadded) portion.
+    // ----------------------------------------------------------------
+    std::vector<float> result(backward_out.begin() + pad_len, backward_out.begin() + pad_len + samples.size());
+    return result;
   }
 } // namespace app
 

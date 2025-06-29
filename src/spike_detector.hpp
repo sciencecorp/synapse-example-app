@@ -77,6 +77,7 @@ class SpikeDetectorApp : public synapse::App {
 
   // Per-channel state
   std::vector<double> running_rms_;               // exponentially-smoothed RMS estimate (µV)
+  std::vector<double> running_mean_;              // exponentially-smoothed mean estimate (µV) for padding
   std::vector<uint64_t> sample_counter_;          // total samples processed per channel
   std::vector<uint64_t> last_spike_sample_idx_;   // last detected spike index (for refractory)
   std::vector<std::deque<float>> pre_buffers_;    // rolling buffer of previous half-wave samples
@@ -94,6 +95,10 @@ class SpikeDetectorApp : public synapse::App {
 
   // Monotonically increasing sequence number for each published spike (wraps at 2^32)
   uint32_t spike_seq_ = 0;
+
+  // Apply zero-phase (forward-backward) band-pass filtering to a vector of samples.
+  // Returns a new vector of equal length.
+  std::vector<float> zero_phase_filter(size_t channel_idx, const std::vector<float>& samples);
 };
 
 }  // namespace app

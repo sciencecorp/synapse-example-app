@@ -58,7 +58,50 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device-ip", required=True)
     p.add_argument("--output-jsonl", required=True)
     p.add_argument("--tap-name", default="spike_waveforms")
+    p.add_argument(
+        "--electrode-map",
+        required=True,
+        help="Path to electrode map JSON file describing the channel grid",
+    )
     return p.parse_args()
+
+
+# --------------------------------------------------------------------------------------
+# Electrode-map helper
+# --------------------------------------------------------------------------------------
+
+
+def load_electrode_map(path: Path) -> list[list[int | None]]:
+    """Load a grid-based electrode map from *path*.
+
+    The file must contain a JSON array of arrays (2-D list).  Each entry should be an
+    integer channel ID or *null*/0 to denote an empty slot.  All rows must have the
+    same length.
+    """
+
+    with path.open() as fp:
+        grid = json.load(fp)
+
+    if not isinstance(grid, list) or not all(isinstance(row, list) for row in grid):
+        raise ValueError("Electrode map must be a JSON array of arrays")
+
+    row_lens = {len(row) for row in grid}
+    if len(row_lens) != 1:
+        raise ValueError("All rows in the electrode map must have the same length")
+
+    norm_grid: list[list[int | None]] = []
+    for row in grid:
+        norm_row: list[int | None] = []
+        for val in row:
+            if val is None:
+                norm_row.append(None)
+            elif isinstance(val, int):
+                norm_row.append(val)
+            else:
+                raise ValueError("Electrode map values must be integers or null/0")
+        norm_grid.append(norm_row)
+
+    return norm_grid
 
 
 # --------------------------------------------------------------------------------------
@@ -85,7 +128,7 @@ def tensor_to_tuple(tensor: Tensor) -> Tuple[int, float, int, np.ndarray]:
     # treat it as **unsigned** so that 0…65,535 wraps naturally instead of
     # jumping to negative numbers when the high bit is set.
     seq = int(np.uint16(samples[0]).item())
-    ch_id = int(samples[1]) + 1  # 1-based in GUI
+    ch_id = int(samples[1])  # use channel IDs as received (no 1-index offset)
     waveform = samples[2:]
 
     return seq, ts_sec, ch_id, waveform
@@ -218,7 +261,7 @@ class ReceiverThread(threading.Thread):
 # --------------------------------------------------------------------------------------
 
 
-def build_gui() -> tuple[
+def build_spike_grid(grid: list[list[int | None]]) -> tuple[
     pg.GraphicsLayoutWidget,
     dict[int, pg.PlotItem],
     dict[int, pg.PlotDataItem],
@@ -232,30 +275,22 @@ def build_gui() -> tuple[
     plots: dict[int, pg.PlotItem] = {}
     curves: dict[int, pg.PlotDataItem] = {}
 
-    n_rows = n_cols = 10
-    ch_to_pos = {}
-    for idx, ch in enumerate(range(1, 9), start=1):
-        ch_to_pos[ch] = (0, idx)
-    ch = 9
-    for r in range(1, 9):
-        for c in range(n_cols):
-            if ch > 88:
-                break
-            ch_to_pos[ch] = (r, c)
-            ch += 1
-    for idx, ch in enumerate(range(89, 97), start=1):
-        ch_to_pos[ch] = (9, idx)
+    n_rows = len(grid)
+    n_cols = len(grid[0]) if n_rows else 0
+
+    content_row_offset = 0  # grid starts at first row now (stats banner separate)
 
     for r in range(n_rows):
         for c in range(n_cols):
-            if (r, c) in [(0, 0)]:
-                # Leave top-left corner empty so the elapsed-time label can be added later
-                continue
-            if (r, c) in [(0, 9), (9, 0), (9, 9)]:
-                w.addLabel("", row=r, col=c)
+            grid_row = r + content_row_offset
+            cid = grid[r][c]
+
+            # Blank / unused slot – leave empty for visual spacing.
+            if cid is None:
+                w.addLabel("", row=grid_row, col=c)
                 continue
 
-            plot = w.addPlot(row=r, col=c)
+            plot = w.addPlot(row=grid_row, col=c)
             plot.setMenuEnabled(False)
             plot.hideAxis("bottom")
             plot.hideAxis("left")
@@ -267,7 +302,7 @@ def build_gui() -> tuple[
 
             plot.setXRange(0, 49)  # waveform length – 1
             plot.setTitle(
-                f"{next(ch for ch, pos in ch_to_pos.items() if pos == (r, c))}",
+                f"{cid}",
                 color="w",
                 size="8pt",
             )
@@ -283,7 +318,6 @@ def build_gui() -> tuple[
             curve.setDownsampling(auto=True)  # let pg pick the stride
             plot.addItem(curve)
 
-            cid = next(ch for ch, pos in ch_to_pos.items() if pos == (r, c))
             plots[cid] = plot
             curves[cid] = curve
 
@@ -304,11 +338,86 @@ def main():
 
     # Build GUI first so the consumer is ready before we start pulling data.
     app = QtWidgets.QApplication([])
-    win, plot_map, curve_map = build_gui()
-    # Display the window as a square rather than maximised to fill the screen.
-    # A fixed size gives a more consistent layout across monitors.
-    win.resize(1200, 1000)  # width, height in pixels – tweak as desired
-    win.show()
+    electrode_grid = load_electrode_map(Path(args.electrode_map))
+    n_rows, n_cols = len(electrode_grid), len(electrode_grid[0])
+
+    # ------------------ sizing logic ------------------
+    BASE_CELL_W, BASE_CELL_H = 120.0, 100.0
+    header_rows = 0  # stats handled by separate widget
+    PAD_W, PAD_H = 40, 40  # window frame / margin allowance
+
+    STATS_H = 30  # approximate height for stats banner
+
+    # Determine available desktop geometry (fallback to 1920x1080 if unavailable)
+    screen = app.primaryScreen()
+    if screen is not None:
+        geom = screen.availableGeometry()
+        avail_w, avail_h = geom.width(), geom.height()
+    else:
+        avail_w, avail_h = 1920, 1080
+
+    # Required size at base cell dimensions (no spacing – we set spacing=0 below)
+    req_w = n_cols * BASE_CELL_W + PAD_W
+    req_h = n_rows * BASE_CELL_H + PAD_H + STATS_H
+
+    # If too large, scale cells down uniformly so the whole window fits.
+    scale = min(1.0, (avail_w * 0.9) / req_w, (avail_h * 0.9) / req_h)
+
+    CELL_W = int(BASE_CELL_W * scale)
+    CELL_H = int(BASE_CELL_H * scale)
+
+    base_w = int(n_cols * CELL_W + PAD_W)
+    base_h = int(n_rows * CELL_H + PAD_H + STATS_H)
+
+    spike_widget, plot_map, curve_map = build_spike_grid(electrode_grid)
+
+    # Remove inter-item spacing to keep computed sizes accurate
+    try:
+        spike_widget.ci.setSpacing(0)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+    spike_widget.resize(base_w, base_h)
+    spike_widget.setMinimumSize(base_w, base_h)
+
+    # Container combines stats + spike grid
+    container = QtWidgets.QWidget()
+    vlayout = QtWidgets.QVBoxLayout(container)
+    vlayout.setContentsMargins(0, 0, 0, 0)
+    vlayout.setSpacing(0)
+
+    # Stats banner widget and helpers
+    stats_widget = QtWidgets.QWidget()
+    stats_layout = QtWidgets.QHBoxLayout(stats_widget)
+    stats_layout.setContentsMargins(5, 2, 5, 2)
+    stats_layout.setSpacing(0)
+    stats_labels: list[QtWidgets.QLabel] = []
+
+    def _ensure_stats_labels(count: int):
+        while len(stats_labels) < count:
+            lbl = QtWidgets.QLabel(
+                "", alignment=QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter
+            )
+            lbl.setStyleSheet("color: white;")
+            stats_layout.addWidget(lbl, 1)  # equal stretch
+            stats_labels.append(lbl)
+
+    def _update_stats_text(segments: list[str]):
+        _ensure_stats_labels(len(segments))
+        for idx, seg in enumerate(segments):
+            stats_labels[idx].setText(seg)
+        for idx in range(len(segments), len(stats_labels)):
+            stats_labels[idx].setText("")
+
+    vlayout.addWidget(stats_widget)
+    vlayout.addWidget(spike_widget)
+
+    container.resize(base_w, base_h)
+    container.setMinimumSize(base_w, base_h)
+    container.show()
+
+    # Track last applied cell dimensions so we only update when needed
+    _last_cell_size: tuple[int, int] | None = None
 
     # ----------------------------------------------------------------------------
     # Connect to the device *after* the Qt event-loop starts so we can get the
@@ -363,35 +472,50 @@ def main():
     current_window_start: float | None = None
     first_ts: float | None = None
     local_start_time: float | None = None  # wall-clock time when we saw the first spike
-    elapsed_label = pg.LabelItem(justify="left")
-    elapsed_label.setFixedWidth(90)  # prevent first column from expanding
-    win.addItem(elapsed_label, row=0, col=0)
 
     # Track latest stats to show under elapsed
     last_stats_update = time.time()
     last_drop: float | None = None
     last_bw: float | None = None
 
-    # Cache last applied column width so we only resize when necessary
-    _last_col_width: int | None = None
-
     # Sliding-window counts for GUI-render stats: entries are (timestamp, plotted, dropped)
     gui_stats: deque[tuple[float, int, int]] = deque()
 
-    def _update_column_widths():
-        """Ensure all columns have uniform width that follows window resizing."""
-        nonlocal _last_col_width
-        layout = win.ci.layout  # type: ignore[attr-defined]
-        # Divide available width evenly across 10 columns (guard against 0)
-        col_width = max(10, win.width() // 11)
-        if col_width != _last_col_width:
-            for c in range(10):
-                try:
-                    layout.setColumnFixedWidth(c, col_width)
-                except Exception:
-                    # If the Qt binding lacks this method, silently skip
-                    pass
-            _last_col_width = col_width
+    def _update_cell_sizes():
+        """Adapt column widths and row heights to current window size."""
+        nonlocal _last_cell_size
+
+        if n_cols == 0:
+            return
+
+        layout = spike_widget.ci.layout  # type: ignore[attr-defined]
+
+        # Compute available size excluding padding.
+        avail_w = max(100, container.width() - PAD_W)
+        avail_h = max(100, container.height() - stats_widget.height() - PAD_H)
+
+        col_width = int(avail_w / n_cols)
+        row_height = int(avail_h / max(1, n_rows))
+
+        if _last_cell_size == (col_width, row_height):
+            return  # no change
+
+        # Apply column widths
+        for c in range(n_cols):
+            try:
+                layout.setColumnFixedWidth(c, col_width)
+            except Exception:
+                pass
+
+        # Apply row heights (including header)
+        total_rows = n_rows
+        for r in range(total_rows):
+            try:
+                layout.setRowFixedHeight(r, row_height)
+            except Exception:
+                pass
+
+        _last_cell_size = (col_width, row_height)
 
     def update_gui():
         nonlocal current_window_start, first_ts, local_start_time, last_stats_update, last_drop, last_bw, WAVEFORM_LEN, PER_WF_LEN, RING_CAPACITY, shared_ring_x, ring_y, ring_head, ring_count, rx
@@ -401,7 +525,7 @@ def main():
             return
 
         # Keep grid columns at equal widths adaptive to any window resize
-        _update_column_widths()
+        _update_cell_sizes()
 
         batch = rx.pop_batch(MAX_POP_PER_TICK)
         if not batch:
@@ -506,24 +630,22 @@ def main():
             last_drop, last_bw = rx.get_stats()
             last_stats_update = now_wall
 
-        # Update main label text each GUI tick
-        text_lines = [f"Elapsed: {elapsed_sec:0.1f} s"]
+        # Prepare horizontal stats segments for the header row
+        segments: list[str] = []
+        segments.append(f"Elapsed: {elapsed_sec:0.1f}s")
 
         if local_start_time is not None:
             wall_elapsed = time.time() - local_start_time
             lag_sec = elapsed_sec - wall_elapsed
-            text_lines.append(f"Lag: {lag_sec:5.2f} s")
+            segments.append(f"Lag: {lag_sec:5.2f}s")
 
         if last_drop is not None:
-            text_lines.extend(
-                [
-                    f"Dropped: {last_drop*100:5.2f}%",
-                    f"Unplotted: {drop_gui_pct*100:5.2f}%",
-                    f"BW: {last_bw:5.2f} Mbps",
-                ]
-            )
+            segments.append(f"Dropped: {last_drop*100:5.2f}%")
+            segments.append(f"Unplotted: {drop_gui_pct*100:5.2f}%")
+            segments.append(f"BW: {last_bw:5.2f}Mbps")
 
-        elapsed_label.setText("<br/>".join(text_lines))
+        # Render the stats line (single label spanning columns)
+        _update_stats_text(segments)
 
         # Update only the channels that received new data this tick.
         for cid in touched:
