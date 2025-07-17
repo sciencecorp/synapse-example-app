@@ -23,8 +23,8 @@
       "id": 1,
       "broadbandSource": {
         "peripheral_id": 100,
-        "sample_rate_hz": 32000,
-        "bit_width": 12,
+        "sample_rate_hz": 30000,
+        "bit_width": 16,
         "signal": {
           "electrode": {
             "channels": [

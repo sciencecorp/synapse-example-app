@@ -219,13 +219,11 @@ bool FixedWeightDecoder::wait_for_frames(std::vector<synapse::BroadbandFrame>& f
     return false;
   }
 
-  const uint64_t target_bin_size_ns = static_cast<uint64_t>(bin_size_ms * 1e6);
+  const float bin_size_sec = bin_size_ms / 1000;
+  const size_t target_num_of_frames = bin_size_sec * (sample_rate_hz_);
 
   // Prepare our output vector
   frames.clear();
-
-  // Get the first timestamp
-  uint64_t first_timestamp_ns = 0;
 
   // TODO: We should consider having a timeout here
   while (node_running_) {
@@ -268,23 +266,14 @@ bool FixedWeightDecoder::wait_for_frames(std::vector<synapse::BroadbandFrame>& f
       }
       last_sequence_number_ = broadband_frame.sequence_number();
 
-      // Record the first timestamp if this is our first frame
-      if (frames.empty()) {
-        first_timestamp_ns = broadband_frame.timestamp_ns();
-      }
-
       // Add the frame to our collection
       frames.push_back(broadband_frame);
     }
 
     // TODO: Instead, we could process the entire multipart?
     // After processing this multipart, check if we've reached the bin size
-    if (!frames.empty()) {
-      const auto& last_frame = frames.back();
-      if (last_frame.timestamp_ns() - first_timestamp_ns >= target_bin_size_ns) {
-        // We've collected enough frames to reach the bin size
-        return true;
-      }
+    if (frames.size() >= target_num_of_frames) {
+      return true;
     }
   }
   return false;
