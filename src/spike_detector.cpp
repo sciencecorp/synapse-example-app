@@ -153,21 +153,17 @@ namespace app
         gpio_tensor.set_dtype(synapse::Tensor_DType_DT_INT16);
         gpio_tensor.set_endianness(synapse::Tensor_Endianness_TENSOR_LITTLE_ENDIAN);
 
-        // Shape: [samples, gpio_pins]
+        // Shape: [1] – single scalar representing first GPIO pin (0/1)
         gpio_tensor.mutable_shape()->Clear();
-        gpio_tensor.mutable_shape()->Add(static_cast<int32_t>(gpio_data[0].size()));
-        gpio_tensor.mutable_shape()->Add(static_cast<int32_t>(gpio_data.size()));
+        gpio_tensor.mutable_shape()->Add(1); // single value
 
-        // Flatten in row-major order (sample-major)
-        std::vector<int16_t> payload;
-        payload.reserve(gpio_data[0].size() * gpio_data.size());
-        for (size_t s = 0; s < gpio_data[0].size(); ++s)
-        {
-          for (size_t g = 0; g < gpio_data.size(); ++g)
-          {
-            payload.push_back(gpio_data[g][s]);
-          }
-        }
+        // Payload: latest sample from first GPIO pin, converted to 0/1
+        int16_t bit_value = gpio_data.empty() ? 0 : (gpio_data[0].back() != 0 ? 1 : 0);
+        std::vector<int16_t> payload{bit_value};
+
+        // Real-time log (for verification)
+        spdlog::info("GPIO bit value: {}", bit_value);
+
         const char* data_ptr = reinterpret_cast<const char*>(payload.data());
         gpio_tensor.set_data(std::string(data_ptr, payload.size() * sizeof(int16_t)));
 

@@ -257,6 +257,55 @@ class ReceiverThread(threading.Thread):
         return drop_pct, bandwidth_mbps
 
 
+class GPIORxThread(threading.Thread):
+    """Background reader that tracks the latest GPIO level (0/1).
+
+    The synapse Tap API delivers messages continuously.  Polling the tap only
+    once every GUI tick leads to missed samples and connection drops.  This
+    thread keeps a tight read-loop on the GPIO tap and exposes the most recent
+    level through a threadsafe getter.
+    """
+
+    def __init__(self, tap: Tap):
+        super().__init__(daemon=True)
+        self._tap = tap
+        self._level = 0
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+
+    # --------------------------------------------------
+    def run(self):
+        tensor_msg = Tensor()
+        try:
+            while not self._stop_event.is_set():
+                raw = self._tap.read()
+                if raw is None:
+                    time.sleep(0.0002)
+                    continue
+
+                tensor_msg.ParseFromString(raw)
+                if len(tensor_msg.shape) >= 1:
+                    data_arr = np.frombuffer(tensor_msg.data, dtype=np.int16)
+                    if data_arr.size:
+                        lvl = 1 if data_arr[-1] != 0 else 0
+                        with self._lock:
+                            self._level = lvl
+        finally:
+            try:
+                self._tap.close()
+            except Exception:
+                pass
+
+    # --------------------------------------------------
+    def get_level(self) -> int:
+        with self._lock:
+            return self._level
+
+    def stop(self):
+        self._stop_event.set()
+        self.join(timeout=2.0)
+
+
 # --------------------------------------------------------------------------------------
 # GUI setup (one persistent PlotDataItem per channel)
 # --------------------------------------------------------------------------------------
@@ -393,20 +442,24 @@ def main():
     stats_layout.setContentsMargins(5, 2, 5, 2)
     stats_layout.setSpacing(5)
 
-    # ----- GPIO progress bar -----
+    # ----- GPIO status dot (container so it stretches like other stats) -----
+    gpio_container = QtWidgets.QWidget()
+    gpio_container_layout = QtWidgets.QHBoxLayout(gpio_container)
+    gpio_container_layout.setContentsMargins(0, 0, 0, 0)
+    gpio_container_layout.setSpacing(4)
+    gpio_container_layout.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+
     gpio_label = QtWidgets.QLabel("GPIO:")
     gpio_label.setStyleSheet("color: white;")
-    gpio_bar = QtWidgets.QProgressBar()
-    gpio_bar.setRange(0, 1)
-    gpio_bar.setValue(0)
-    gpio_bar.setTextVisible(False)
-    gpio_bar.setFixedHeight(10)
-    gpio_bar.setStyleSheet(
-        "QProgressBar {background-color: #555; border: 1px solid #333;} "
-        "QProgressBar::chunk {background-color: #00ff00;}"
-    )
-    stats_layout.addWidget(gpio_label, 0)
-    stats_layout.addWidget(gpio_bar, 0)
+    gpio_container_layout.addWidget(gpio_label)
+
+    gpio_dot = QtWidgets.QLabel()
+    DOT_SIZE = 12
+    gpio_dot.setFixedSize(DOT_SIZE, DOT_SIZE)
+    gpio_dot.setStyleSheet("background-color: #00ff00; border-radius: 6px;")
+    gpio_container_layout.addWidget(gpio_dot)
+
+    stats_layout.addWidget(gpio_container, 1)  # match stretch of other segments
     stats_labels: list[QtWidgets.QLabel] = []
 
     def _ensure_stats_labels(count: int):
@@ -442,12 +495,12 @@ def main():
     # ----------------------------------------------------------------------------
 
     rx: ReceiverThread | None = None  # spike tap receiver
-    tap_gpio: Tap | None = None  # direct tap for gpio
+    gpio_rx: GPIORxThread | None = None  # background GPIO receiver
     gpio_level: int = 0  # last sampled level (0/1)
+    prev_gpio_level: int = -1  # sentinel to detect changes
 
     def _connect_and_start_receiver():  # runs in a worker thread
-        nonlocal rx
-        nonlocal tap_gpio
+        nonlocal rx, gpio_rx
         try:
             tap = Tap(args.device_ip)
             tap.connect(args.tap_name)
@@ -456,15 +509,17 @@ def main():
             rx = ReceiverThread(tap, output_path)
             rx.start()
 
-            # Connect to GPIO tap (optional)
+            # ---------------- GPIO tap ----------------
             try:
-                tap_gpio = Tap(args.device_ip)
-                tap_gpio.connect(args.gpio_tap_name)
+                tap_g = Tap(args.device_ip)
+                tap_g.connect(args.gpio_tap_name)
                 print(f"Connected to {args.gpio_tap_name} @ {args.device_ip}")
+
+                gpio_rx = GPIORxThread(tap_g)
+                gpio_rx.start()
             except Exception as exc:
                 print(f"GPIO tap connection failed: {exc}", file=sys.stderr)
         except Exception as exc:
-            # Surface connection errors in the GUI thread so they are visible
             QtCore.QTimer.singleShot(
                 0,
                 lambda: QtWidgets.QMessageBox.critical(
@@ -545,8 +600,7 @@ def main():
         _last_cell_size = (col_width, row_height)
 
     def update_gui():
-        nonlocal current_window_start, first_ts, local_start_time, last_stats_update, last_drop, last_bw, WAVEFORM_LEN, PER_WF_LEN, RING_CAPACITY, shared_ring_x, ring_y, ring_head, ring_count, rx
-        nonlocal tap_gpio, gpio_level
+        nonlocal current_window_start, first_ts, local_start_time, last_stats_update, last_drop, last_bw, WAVEFORM_LEN, PER_WF_LEN, RING_CAPACITY, shared_ring_x, ring_y, ring_head, ring_count, rx, gpio_rx, gpio_level, prev_gpio_level, gpio_dot
 
         # Receiver not yet connected – nothing to do
         if rx is None:
@@ -556,6 +610,19 @@ def main():
         _update_cell_sizes()
 
         batch = rx.pop_batch(MAX_POP_PER_TICK)
+
+        # --- GPIO level from background reader ---------------------------
+        if gpio_rx is not None:
+            gpio_level = gpio_rx.get_level()
+            if gpio_level != prev_gpio_level:
+                print(f"GPIO level: {gpio_level}", flush=True)
+                prev_gpio_level = gpio_level
+
+        # Update GPIO status dot (0 → bright green, 1 → dim/off)
+        color = "#00ff00" if gpio_level == 0 else "#444444"
+        gpio_dot.setStyleSheet(f"background-color: {color}; border-radius: 6px;")
+
+        # If there are no spike batches, we are done for this tick.
         if not batch:
             return
 
@@ -698,22 +765,8 @@ def main():
                     connect="finite",
                 )
 
-        # ---------------- GPIO polling ------------------------
-        if tap_gpio is not None:
-            tensor_msg = Tensor()
-            # Read at most one message per GUI tick to avoid blocking.
-            raw_g = tap_gpio.read()
-            if raw_g is not None:
-                tensor_msg.ParseFromString(raw_g)
-                if len(tensor_msg.shape) >= 2:
-                    n_samples, n_pins = tensor_msg.shape[0], tensor_msg.shape[1]
-                    if n_pins > 0 and n_samples > 0:
-                        data = np.frombuffer(tensor_msg.data, dtype=np.int16)
-                        if data.size >= n_pins:
-                            val = int(data[-n_pins])  # last sample, first pin
-                            gpio_level = 1 if val != 0 else 0
-
-            gpio_bar.setValue(gpio_level)
+        # ---------------- GPIO indicator ------------------------
+        # (gpio_dot updated above)
 
     timer = QtCore.QTimer()
     timer.timeout.connect(update_gui)
@@ -730,6 +783,8 @@ def main():
     def _stop_rx():
         if rx and rx.is_alive():
             rx.stop()
+        if gpio_rx and gpio_rx.is_alive():
+            gpio_rx.stop()
 
     QtCore.QCoreApplication.instance().aboutToQuit.connect(_stop_rx)
 
@@ -738,6 +793,8 @@ def main():
     finally:
         if rx and rx.is_alive():
             rx.stop()  # stop already joins internally
+        if gpio_rx and gpio_rx.is_alive():
+            gpio_rx.stop()
 
 
 if __name__ == "__main__":
