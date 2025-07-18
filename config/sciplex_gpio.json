@@ -592,12 +592,20 @@
                 "electrode_id": 498,
                 "reference_id": 519,
                 "type": "ELECTRODE"
-              }
+              },
+              { "id": 96, "electrode_id": 0, "type": "GPIO" }
             ],
             "low_cutoff_hz": 57,
             "high_cutoff_hz": 13489
           }
         }
+      }
+    },
+    {
+      "type": "kDiskWriter",
+      "id": 3,
+      "disk_writer": {
+        "filename": "gpio_test"
       }
     }
   ],
@@ -605,6 +613,10 @@
     {
       "src_node_id": 1,
       "dst_node_id": 2
+    },
+    {
+      "src_node_id": 1,
+      "dst_node_id": 3
     }
   ]
 }

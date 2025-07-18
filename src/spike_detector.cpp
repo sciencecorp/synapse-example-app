@@ -35,6 +35,13 @@ namespace app
       return false;
     }
 
+    // Create a tap for raw GPIO data.
+    if (!create_tap<synapse::Tensor>("gpio"))
+    {
+      spdlog::error("Failed to create gpio tap");
+      return false;
+    }
+
     spdlog::info("SpikeDetectorApp set-up complete – waiting for broadband frames …");
     return true;
   }
@@ -58,7 +65,14 @@ namespace app
       /* -------------------------- First-time initialisation ----------------- */
       if (!filters_ready_)
       {
-        const size_t channel_count = first_frame.frame_data_size();
+        // Parse channel layout on the very first frame so we know which indices
+        // correspond to electrode and GPIO channels.
+        if (electrode_indices_.empty() && gpio_indices_.empty())
+        {
+          parse_channel_indices(first_frame);
+        }
+
+        const size_t channel_count = electrode_indices_.size();
         sample_rate_hz_            = first_frame.sample_rate_hz();
         initialise_filters(channel_count, sample_rate_hz_);
         // Allocate per-channel detection state now that we know channel count.
@@ -84,7 +98,8 @@ namespace app
       }
 
       /* ----------------- Zero-phase filter and collect samples ------------ */
-      const size_t channel_count = first_frame.frame_data_size();
+      const size_t channel_count = electrode_indices_.size();
+      const size_t gpio_count    = gpio_indices_.size();
 
       // Temporary container holding raw (µV) samples per channel for this bin.
       std::vector<std::vector<float>> raw_data(channel_count);
@@ -93,14 +108,26 @@ namespace app
         vec.reserve(frames.size());
       }
 
+      // Container for raw GPIO samples (int16) – one vector per GPIO pin.
+      std::vector<std::vector<int16_t>> gpio_data(gpio_count);
+      for (auto& vec : gpio_data)
+      {
+        vec.reserve(frames.size());
+      }
+
       // ---------- Gather raw samples -------------------------------------
       for (const auto& frame : frames)
       {
         const auto& data_in = frame.frame_data();
-        for (size_t ch = 0; ch < channel_count; ++ch)
+        // Electrode channels
+        for (size_t e = 0; e < channel_count; ++e)
         {
-          // Convert raw counts to microvolts (Blackrock units: 0.25 µV/count)
-          raw_data[ch].push_back(data_in[ch]);
+          raw_data[e].push_back(data_in[electrode_indices_[e]]);
+        }
+        // GPIO channels (raw counts, unprocessed)
+        for (size_t g = 0; g < gpio_count; ++g)
+        {
+          gpio_data[g].push_back(static_cast<int16_t>(data_in[gpio_indices_[g]]));
         }
       }
 
@@ -115,6 +142,40 @@ namespace app
       update_running_rms(filtered_data);
       const uint64_t bin_start_ts_ns = frames.front().timestamp_ns();
       detect_and_publish(filtered_data, bin_start_ts_ns);
+
+      // ------------------------------------------------------------
+      // Publish raw GPIO samples (if any)
+      // ------------------------------------------------------------
+      if (!gpio_indices_.empty())
+      {
+        synapse::Tensor gpio_tensor;
+        gpio_tensor.set_timestamp_ns(bin_start_ts_ns);
+        gpio_tensor.set_dtype(synapse::Tensor_DType_DT_INT16);
+        gpio_tensor.set_endianness(synapse::Tensor_Endianness_TENSOR_LITTLE_ENDIAN);
+
+        // Shape: [samples, gpio_pins]
+        gpio_tensor.mutable_shape()->Clear();
+        gpio_tensor.mutable_shape()->Add(static_cast<int32_t>(gpio_data[0].size()));
+        gpio_tensor.mutable_shape()->Add(static_cast<int32_t>(gpio_data.size()));
+
+        // Flatten in row-major order (sample-major)
+        std::vector<int16_t> payload;
+        payload.reserve(gpio_data[0].size() * gpio_data.size());
+        for (size_t s = 0; s < gpio_data[0].size(); ++s)
+        {
+          for (size_t g = 0; g < gpio_data.size(); ++g)
+          {
+            payload.push_back(gpio_data[g][s]);
+          }
+        }
+        const char* data_ptr = reinterpret_cast<const char*>(payload.data());
+        gpio_tensor.set_data(std::string(data_ptr, payload.size() * sizeof(int16_t)));
+
+        if (!publish_tap("gpio", gpio_tensor))
+        {
+          spdlog::warn("Failed to publish GPIO tensor");
+        }
+      }
 
       // Clear processed frames so that next iteration starts fresh.
       frames.clear();
@@ -309,7 +370,7 @@ namespace app
               std::vector<int16_t> payload;
               payload.reserve(waveform.size() + 2); // seq + channel + waveform
               payload.push_back(static_cast<int16_t>(spike_seq_++));  // sequence number
-              payload.push_back(static_cast<int16_t>(ch));            // channel id
+              payload.push_back(static_cast<int16_t>(electrode_indices_[ch])); // channel id (original)
               payload.insert(payload.end(), waveform.begin(), waveform.end());
 
               // Set tensor shape (seq + channel + waveform)
@@ -400,6 +461,52 @@ namespace app
     // ----------------------------------------------------------------
     std::vector<float> result(backward_out.begin() + pad_len, backward_out.begin() + pad_len + samples.size());
     return result;
+  }
+
+  void SpikeDetectorApp::parse_channel_indices(const synapse::BroadbandFrame& frame)
+  {
+    electrode_indices_.clear();
+    gpio_indices_.clear();
+
+    if (frame.channel_ranges_size() == 0)
+    {
+      // Legacy behaviour – assume *all but the last* entry are electrodes and
+      // the final entry is a single GPIO pin.  This matches the current
+      // firmware layout where GPIO samples (if any) are appended after all
+      // electrode channels.
+
+      const size_t total = frame.frame_data_size();
+      if (total == 0)
+        return;  // nothing to do
+
+      // Electrode channels: indices 0 .. total-2  (if at least one electrode)
+      if (total > 1)
+      {
+        electrode_indices_.resize(total - 1);
+        std::iota(electrode_indices_.begin(), electrode_indices_.end(), 0);
+      }
+
+      // GPIO channel: last index
+      gpio_indices_.push_back(total - 1);
+      return;
+    }
+
+    size_t offset = 0;
+    for (const auto& range : frame.channel_ranges())
+    {
+      for (uint32_t i = 0; i < range.count(); ++i)
+      {
+        if (range.type() == synapse::ELECTRODE)
+        {
+          electrode_indices_.push_back(offset + i);
+        }
+        else if (range.type() == synapse::GPIO)
+        {
+          gpio_indices_.push_back(offset + i);
+        }
+      }
+      offset += range.count();
+    }
   }
 } // namespace app
 

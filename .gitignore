@@ -79,3 +79,4 @@ Testing/
 
 # cached permissions
 .synapse_deploy_cache.json
+.scienv

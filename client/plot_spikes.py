@@ -58,6 +58,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device-ip", required=True)
     p.add_argument("--output-jsonl", required=True)
     p.add_argument("--tap-name", default="spike_waveforms")
+    p.add_argument("--gpio-tap-name", default="gpio")
     p.add_argument(
         "--electrode-map",
         required=True,
@@ -390,7 +391,22 @@ def main():
     stats_widget = QtWidgets.QWidget()
     stats_layout = QtWidgets.QHBoxLayout(stats_widget)
     stats_layout.setContentsMargins(5, 2, 5, 2)
-    stats_layout.setSpacing(0)
+    stats_layout.setSpacing(5)
+
+    # ----- GPIO progress bar -----
+    gpio_label = QtWidgets.QLabel("GPIO:")
+    gpio_label.setStyleSheet("color: white;")
+    gpio_bar = QtWidgets.QProgressBar()
+    gpio_bar.setRange(0, 1)
+    gpio_bar.setValue(0)
+    gpio_bar.setTextVisible(False)
+    gpio_bar.setFixedHeight(10)
+    gpio_bar.setStyleSheet(
+        "QProgressBar {background-color: #555; border: 1px solid #333;} "
+        "QProgressBar::chunk {background-color: #00ff00;}"
+    )
+    stats_layout.addWidget(gpio_label, 0)
+    stats_layout.addWidget(gpio_bar, 0)
     stats_labels: list[QtWidgets.QLabel] = []
 
     def _ensure_stats_labels(count: int):
@@ -425,10 +441,13 @@ def main():
     # seconds, so we run it in a background thread to avoid blocking the GUI.
     # ----------------------------------------------------------------------------
 
-    rx: ReceiverThread | None = None  # will be initialised asynchronously
+    rx: ReceiverThread | None = None  # spike tap receiver
+    tap_gpio: Tap | None = None  # direct tap for gpio
+    gpio_level: int = 0  # last sampled level (0/1)
 
     def _connect_and_start_receiver():  # runs in a worker thread
         nonlocal rx
+        nonlocal tap_gpio
         try:
             tap = Tap(args.device_ip)
             tap.connect(args.tap_name)
@@ -436,6 +455,14 @@ def main():
 
             rx = ReceiverThread(tap, output_path)
             rx.start()
+
+            # Connect to GPIO tap (optional)
+            try:
+                tap_gpio = Tap(args.device_ip)
+                tap_gpio.connect(args.gpio_tap_name)
+                print(f"Connected to {args.gpio_tap_name} @ {args.device_ip}")
+            except Exception as exc:
+                print(f"GPIO tap connection failed: {exc}", file=sys.stderr)
         except Exception as exc:
             # Surface connection errors in the GUI thread so they are visible
             QtCore.QTimer.singleShot(
@@ -519,6 +546,7 @@ def main():
 
     def update_gui():
         nonlocal current_window_start, first_ts, local_start_time, last_stats_update, last_drop, last_bw, WAVEFORM_LEN, PER_WF_LEN, RING_CAPACITY, shared_ring_x, ring_y, ring_head, ring_count, rx
+        nonlocal tap_gpio, gpio_level
 
         # Receiver not yet connected – nothing to do
         if rx is None:
@@ -669,6 +697,23 @@ def main():
                     pen=WHITE_PEN,
                     connect="finite",
                 )
+
+        # ---------------- GPIO polling ------------------------
+        if tap_gpio is not None:
+            tensor_msg = Tensor()
+            # Read at most one message per GUI tick to avoid blocking.
+            raw_g = tap_gpio.read()
+            if raw_g is not None:
+                tensor_msg.ParseFromString(raw_g)
+                if len(tensor_msg.shape) >= 2:
+                    n_samples, n_pins = tensor_msg.shape[0], tensor_msg.shape[1]
+                    if n_pins > 0 and n_samples > 0:
+                        data = np.frombuffer(tensor_msg.data, dtype=np.int16)
+                        if data.size >= n_pins:
+                            val = int(data[-n_pins])  # last sample, first pin
+                            gpio_level = 1 if val != 0 else 0
+
+            gpio_bar.setValue(gpio_level)
 
     timer = QtCore.QTimer()
     timer.timeout.connect(update_gui)

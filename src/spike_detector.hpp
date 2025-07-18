@@ -12,6 +12,7 @@
 
 #include "api/datatype.pb.h"
 #include "api/nodes/broadband_source.pb.h"
+#include "api/channel.pb.h"
 
 namespace app {
 
@@ -48,6 +49,9 @@ class SpikeDetectorApp : public synapse::App {
   // BroadbandFrame so we know the channel count and sample rate.
   void initialise_filters(size_t channel_count, float sample_rate_hz);
 
+  // Parse channel ranges in the first BroadbandFrame to populate electrode and GPIO indices.
+  void parse_channel_indices(const synapse::BroadbandFrame& frame);
+
   // No built-in spike detector; we implement RMS detection directly.
 
   /* ----------------------------------------------------------------------- */
@@ -81,6 +85,10 @@ class SpikeDetectorApp : public synapse::App {
   std::vector<uint64_t> sample_counter_;          // total samples processed per channel
   std::vector<uint64_t> last_spike_sample_idx_;   // last detected spike index (for refractory)
   std::vector<std::deque<float>> pre_buffers_;    // rolling buffer of previous half-wave samples
+
+  // Indices into frame_data for each channel type (filled on first frame)
+  std::vector<size_t> electrode_indices_;
+  std::vector<size_t> gpio_indices_;
 
   // Helper to update RMS estimates
   void update_running_rms(const std::vector<std::vector<float>>& filtered_data);

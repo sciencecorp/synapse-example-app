@@ -1,4 +1,5 @@
 numpy
 protobuf
-science-synapse
+grpcio>=1.71.2
+science-synapse>=2.2.11
 pyqtgraph
