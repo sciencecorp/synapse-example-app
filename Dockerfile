@@ -98,7 +98,7 @@ RUN git clone https://github.com/microsoft/vcpkg.git "${VCPKG_ROOT}" && \
 
 # copy project-specific ports and manifest before installing
 COPY vcpkg.json "${VCPKG_ROOT}/vcpkg.json"
-COPY external "${VCPKG_ROOT}/external/"
+COPY external/sciencecorp/vcpkg "${VCPKG_ROOT}/external/sciencecorp/vcpkg"
 
 RUN cd "${VCPKG_ROOT}" && \
     ./vcpkg install \
@@ -109,7 +109,7 @@ RUN cd "${VCPKG_ROOT}" && \
 # -----------------------------------------------------------------------------
 # Install Synapse SDK from internal repository (same steps on both)
 # -----------------------------------------------------------------------------
-ARG SDK_VERSION=0.3.0
+ARG SDK_VERSION=0.5.1
 COPY keys/science-repo-public.asc /usr/share/keyrings/scifi-repo-science-public.asc
 RUN set -eux; \
     # Add the science repo that hosts synapse-app-sdk and make sure its key is trusted
@@ -135,4 +135,4 @@ ENV VCPKG_INSTALLED_DIR="${VCPKG_ROOT}/build/host/vcpkg_installed"
 # Final workspace & entrypoint
 # -----------------------------------------------------------------------------
 WORKDIR /home/workspace
-CMD ["/bin/bash"] 
+CMD ["/bin/bash"]

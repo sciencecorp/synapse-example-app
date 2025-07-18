@@ -27,7 +27,9 @@ synapsectl build .
 synapsectl -u your-device-identifier deploy .
 ```
 
-## Run
+## What are Synapse Apps
+
+Synapse Apps are standalone applications that can be deployed to a synapse device. Written in C++, they allow you to run your neural processing algorithms on device to minimize latency.
 
 To start the app with Scifi's onboard broadband source simulator:
 
@@ -47,7 +49,9 @@ To listen for spikes:
 python ./client/plot_spikes.py --output-jsonl data/spikes.jsonl --device-ip <your-device-ip> --electrode-map electrode_maps/<your-electrode-map>.json
 ```
 
-To stop the app:
+### Update Cursor Channels
+
+To dynamically update which channels are used for cursor control:
 
 ```bash
 synapsectl -u your-device-identifier stop
