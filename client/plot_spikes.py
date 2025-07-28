@@ -18,7 +18,7 @@ import threading
 import time
 from collections import defaultdict, deque
 from pathlib import Path
-from typing import Tuple
+from typing import Any, Tuple
 
 # Pin NumPy/OpenBLAS to a single thread so we don't starve the Qt GUI thread
 os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -27,6 +27,8 @@ import numpy as np
 import pyqtgraph as pg  # type: ignore
 from pyqtgraph.Qt import QtCore, QtWidgets
 from synapse.api.datatype_pb2 import Tensor
+
+# Tap API
 from synapse.client.taps import Tap
 
 # Shared pen used for all waveforms
@@ -34,7 +36,7 @@ WHITE_PEN = pg.mkPen("w", width=1)
 
 # ---------------------- tunables ----------------------
 # Rendered FPS for GUI (ms interval for timer)
-GUI_UPDATE_INTERVAL_MS = 100
+GUI_UPDATE_INTERVAL_MS = 25  # match 25-ms spike-count bins (40 Hz)
 
 # Max number of spikes popped from the queue per GUI update
 MAX_POP_PER_TICK = 5000  # process more events per tick to keep queue short
@@ -47,6 +49,27 @@ BACKLOG_THRESHOLD = 1000  # if queue grows beyond this, drain extra without plot
 
 STATS_WINDOW_SEC = 60.0  # horizon for dropped / unplotted stats
 
+# --------------------------------------------------------------------------------------
+# Raster display scaling
+# --------------------------------------------------------------------------------------
+
+# Pixel height allocated per channel row in the binned-spike raster.  Increasing this
+# value makes each channel line thicker (default 3 → ~3× taller than before).
+RASTER_ROW_HEIGHT = 2
+
+# Upper bound for the raster colour scale (counts ≥ this value map to the top colour).
+RASTER_CMAP_MAX = 3
+
+# --------------------------------------------------------------------------------------
+# Spike-count bin configuration
+# --------------------------------------------------------------------------------------
+
+BIN_MS = 25.0
+WINDOW_SEC = 10.0  # raster window length
+BIN_PER_SEC = int(1000.0 / BIN_MS)
+RASTER_BINS = int(WINDOW_SEC * BIN_PER_SEC)
+MAX_CHANNELS = 96
+
 
 # --------------------------------------------------------------------------------------
 # CLI helpers
@@ -56,9 +79,9 @@ STATS_WINDOW_SEC = 60.0  # horizon for dropped / unplotted stats
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser("Live spike viewer (pyqtgraph backend)")
     p.add_argument("--device-ip", required=True)
-    p.add_argument("--output-jsonl", required=True)
     p.add_argument("--tap-name", default="spike_waveforms")
     p.add_argument("--gpio-tap-name", default="gpio")
+    p.add_argument("--spike-count-tap", default="spike_counts")
     p.add_argument(
         "--electrode-map",
         required=True,
@@ -115,45 +138,59 @@ def tensor_to_tuple(tensor: Tensor) -> Tuple[int, float, int, np.ndarray]:
     ts_sec = tensor.timestamp_ns / 1e9
 
     data_bytes = tensor.data
-    dtype = np.int16 if tensor.dtype == Tensor.DType.DT_INT16 else np.float32
 
+    # ---------------- INT8 payload ----------------------------------
+    if tensor.dtype == Tensor.DType.DT_INT8:
+        raw = np.frombuffer(data_bytes, dtype=np.int8)
+
+        # Treat first two entries as unsigned for natural wrap-around
+        seq = int(np.uint8(raw[0]).item())
+        ch_id = int(np.uint8(raw[1]).item())
+
+        # Scale waveform back to µV (original detector clips at ±200/-250)
+        wf = raw[2:].astype(np.float32) * (200.0 / 127.0)
+
+        return seq, ts_sec, ch_id, wf
+
+    # ---------------- INT16 payload ---------------------------------
+    if tensor.dtype == Tensor.DType.DT_INT16:
+        raw = np.frombuffer(data_bytes, dtype=np.int16)
+        seq = int(np.uint16(raw[0]).item())
+        ch_id = int(raw[1])
+        wf = raw[2:].astype(np.float32)
+        return seq, ts_sec, ch_id, wf
+
+    # ---------------- FLOAT32 fallback ------------------------------
+    dtype = np.float32
     if tensor.endianness == Tensor.Endianness.TENSOR_BIG_ENDIAN:
         fmt = f">{len(data_bytes) // 4}f"
-        samples = np.array(struct.unpack(fmt, data_bytes), dtype=dtype).astype(
-            np.float32
-        )
+        samples = np.array(struct.unpack(fmt, data_bytes), dtype=dtype)
     else:
-        samples = np.frombuffer(data_bytes, dtype=dtype).astype(np.float32)
+        samples = np.frombuffer(data_bytes, dtype=dtype)
 
-    # First value encodes a sequence counter stored as INT16, but we want to
-    # treat it as **unsigned** so that 0…65,535 wraps naturally instead of
-    # jumping to negative numbers when the high bit is set.
     seq = int(np.uint16(samples[0]).item())
-    ch_id = int(samples[1])  # use channel IDs as received (no 1-index offset)
+    ch_id = int(samples[1])
     waveform = samples[2:]
 
     return seq, ts_sec, ch_id, waveform
 
 
-# --------------------------------------------------------------------------------------
-# Worker thread – receives tap data and dumps JSONL
-# --------------------------------------------------------------------------------------
+# ------------------------------------------------------------------
+# Receiver for spike waveforms (batched or single)
+# ------------------------------------------------------------------
 
 
 class ReceiverThread(threading.Thread):
-    def __init__(self, tap: Tap, outfile: Path, queue_max=20000):
+    def __init__(self, tap: Tap, queue_max=20000):
         super().__init__(daemon=True)
-        import gzip
-
         self._tap = tap
-        self._out = outfile.open("w", buffering=1)
         self._queue: deque[Tuple[float, int, np.ndarray]] = deque(maxlen=queue_max)
         self._lock = threading.Lock()
         self._stats_lock = threading.Lock()
         self._stop_event = threading.Event()
 
         # Stats bookkeeping
-        self._seq_mod = 2**16  # 16-bit counter wraps at 65,536
+        self._seq_mod = 2**8  # 8-bit counter wraps at 256
         self._dropped_total = 0
         self._received_total = 0
         self._bw_samples: deque[tuple[float, int]] = deque()
@@ -162,8 +199,7 @@ class ReceiverThread(threading.Thread):
         self._last_seq: int | None = None
 
     def run(self):
-        flush_every = 500  # disk flush interval
-        events_since_flush = 0
+        # Disk persistence removed – no flush bookkeeping needed
 
         tensor_msg = Tensor()
         try:
@@ -174,52 +210,69 @@ class ReceiverThread(threading.Thread):
                     continue
 
                 tensor_msg.ParseFromString(raw)
-                seq, ts_sec, ch_id, wf = tensor_to_tuple(tensor_msg)
 
-                # ---------------------- stats update ----------------------
-                now = time.time()
-                with self._stats_lock:
-                    # Sequence-based loss detection (wrap-around aware)
-                    gap = 0
-                    if self._last_seq is not None:
-                        expected = (self._last_seq + 1) % self._seq_mod
-                        if seq != expected:
-                            gap = (seq - expected) % self._seq_mod
-                            self._dropped_total += gap
+                # ==========================================================
+                # Handle batched or single-spike tensors
+                # ==========================================================
+                def _enqueue(ts_s: float, seq_val: int, cid: int, waveform: np.ndarray):
+                    # ---------------- stats update -----------------------
+                    now_local = time.time()
+                    with self._stats_lock:
+                        gap_v = 0
+                        if self._last_seq is not None:
+                            expected = (self._last_seq + 1) % self._seq_mod
+                            if seq_val != expected:
+                                gap_v = (seq_val - expected) % self._seq_mod
+                                self._dropped_total += gap_v
 
-                    self._last_seq = seq
+                        self._last_seq = seq_val
 
-                    self._received_total += 1
+                        self._received_total += 1
 
-                    # Maintain 60-s sliding window of sequence stats
-                    self._seq_window.append((now, gap))  # gap may be 0
-                    window_cutoff = now - STATS_WINDOW_SEC
-                    while self._seq_window and self._seq_window[0][0] < window_cutoff:
-                        self._seq_window.popleft()
+                        self._seq_window.append((now_local, gap_v))
+                        window_cutoff = now_local - STATS_WINDOW_SEC
+                        while (
+                            self._seq_window and self._seq_window[0][0] < window_cutoff
+                        ):
+                            self._seq_window.popleft()
 
-                    # Bandwidth window (1-s sliding)
-                    self._bw_samples.append((now, len(raw)))
-                    while self._bw_samples and now - self._bw_samples[0][0] > 1.0:
-                        self._bw_samples.popleft()
+                        self._bw_samples.append((now_local, len(raw)))
+                        while (
+                            self._bw_samples
+                            and now_local - self._bw_samples[0][0] > 1.0
+                        ):
+                            self._bw_samples.popleft()
 
-                # ---------------------- GUI queue -------------------------
-                with self._lock:
-                    self._queue.append((ts_sec, ch_id, wf))
+                    # --------------- queue push -------------------------
+                    with self._lock:
+                        self._queue.append((ts_s, cid, waveform))
 
-                # Persist raw data (no seq)
-                self._out.write(json.dumps([ts_sec, ch_id, wf.tolist()]) + "\n")
-                events_since_flush += 1
-                if events_since_flush >= flush_every:
-                    self._out.flush()
-                    events_since_flush = 0
+                ts_sec = tensor_msg.timestamp_ns / 1e9
+
+                if (
+                    tensor_msg.dtype == Tensor.DType.DT_INT8
+                    and len(tensor_msg.shape) >= 2
+                ):
+                    rows = tensor_msg.shape[0]
+                    row_len = tensor_msg.shape[1]
+                    raw_arr = np.frombuffer(tensor_msg.data, dtype=np.int8)
+                    raw_arr = raw_arr.reshape(rows, row_len)
+
+                    for r in raw_arr:
+                        seq_v = int(np.uint8(r[0]).item())
+                        cid_v = int(np.uint8(r[1]).item())
+                        wf_v = r[2:].astype(np.float32) * (
+                            200.0 / 127.0
+                        )  # scale back to µV
+                        _enqueue(ts_sec, seq_v, cid_v, wf_v)
+                else:
+                    seq, ts_sec_s, ch_id, wf = tensor_to_tuple(tensor_msg)
+                    _enqueue(ts_sec_s, seq, ch_id, wf)
         finally:
-            # Ensure resources closed exactly once after exit
             try:
                 self._tap.close()
             except Exception:
                 pass
-            self._out.flush()
-            self._out.close()
 
     # --------------------------------------------------
     def pop_batch(self, max_items=2000):
@@ -257,13 +310,14 @@ class ReceiverThread(threading.Thread):
         return drop_pct, bandwidth_mbps
 
 
+# ---------------- GPIO level receiver (small helper) -------------------
+
+
 class GPIORxThread(threading.Thread):
     """Background reader that tracks the latest GPIO level (0/1).
 
-    The synapse Tap API delivers messages continuously.  Polling the tap only
-    once every GUI tick leads to missed samples and connection drops.  This
-    thread keeps a tight read-loop on the GPIO tap and exposes the most recent
-    level through a threadsafe getter.
+    Keeps a tight read-loop on the GPIO tap so the ZeroMQ connection stays
+    healthy even if the GUI only polls the value once per timer tick.
     """
 
     def __init__(self, tap: Tap):
@@ -276,6 +330,8 @@ class GPIORxThread(threading.Thread):
     # --------------------------------------------------
     def run(self):
         tensor_msg = Tensor()
+        import numpy as np
+
         try:
             while not self._stop_event.is_set():
                 raw = self._tap.read()
@@ -304,6 +360,81 @@ class GPIORxThread(threading.Thread):
     def stop(self):
         self._stop_event.set()
         self.join(timeout=2.0)
+
+
+# --------------------------------------------------------------------------------------
+# Spike-count receiver
+# --------------------------------------------------------------------------------------
+
+
+class CountRxThread(threading.Thread):
+    """Background thread that streams spike-count tensors.
+
+    Provides a queue of (timestamp_sec, counts ndarray) entries.
+    """
+
+    def __init__(self, tap: Tap, queue_max=400):
+        super().__init__(daemon=True)
+        self._tap = tap
+        self._queue: deque[Tuple[float, "np.ndarray[Any, np.float32]"]] = deque(
+            maxlen=queue_max
+        )
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+
+        # Arrival-rate tracking (timestamps of recent tensors)
+        self._ts_window: deque[float] = deque()
+
+    # --------------------------------------------------
+    def run(self):
+        tensor_msg = Tensor()
+        import numpy as np  # local import to avoid circular
+
+        try:
+            while not self._stop_event.is_set():
+                raw = self._tap.read()
+                if raw is None:
+                    time.sleep(0.0002)
+                    continue
+
+                tensor_msg.ParseFromString(raw)
+
+                if tensor_msg.dtype != Tensor.DType.DT_UINT16:
+                    continue  # ignore unexpected
+
+                counts = np.frombuffer(tensor_msg.data, dtype=np.uint16)
+                ts_s = tensor_msg.timestamp_ns / 1e9
+
+                with self._lock:
+                    self._queue.append((ts_s, counts))
+
+                    # --- update arrival timestamps window (≤1 s) ---
+                    self._ts_window.append(time.time())
+                    cutoff = self._ts_window[-1] - 1.0
+                    while self._ts_window and self._ts_window[0] < cutoff:
+                        self._ts_window.popleft()
+        finally:
+            try:
+                self._tap.close()
+            except Exception:
+                pass
+
+    # --------------------------------------------------
+    def pop_next(self):
+        with self._lock:
+            if self._queue:
+                return self._queue.popleft()
+        return None
+
+    def stop(self):
+        self._stop_event.set()
+        self.join(timeout=2.0)
+
+    # --------------------------------------------------
+    def get_rate(self) -> float:
+        """Return current spike-count tensor rate (bins/s) over the last second."""
+        with self._lock:
+            return float(len(self._ts_window))
 
 
 # --------------------------------------------------------------------------------------
@@ -383,8 +514,6 @@ def build_spike_grid(grid: list[list[int | None]]) -> tuple[
 
 def main():
     args = parse_args()
-    output_path = Path(args.output_jsonl)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Build GUI first so the consumer is ready before we start pulling data.
     app = QtWidgets.QApplication([])
@@ -479,6 +608,49 @@ def main():
             stats_labels[idx].setText("")
 
     vlayout.addWidget(stats_widget)
+
+    # ---------------------------------------------------
+    # Raster plot for spike counts (10-s rolling)
+    # ---------------------------------------------------
+    raster_plot = pg.PlotWidget()
+    raster_plot.setMenuEnabled(False)
+    raster_plot.hideAxis("bottom")
+    raster_plot.hideAxis("left")
+    raster_plot.setAspectLocked(False)
+
+    # Fixed ranges
+    raster_plot.setLimits(xMin=0, xMax=RASTER_BINS, yMin=0, yMax=MAX_CHANNELS)
+    raster_plot.setXRange(0, RASTER_BINS)
+    raster_plot.setYRange(0, MAX_CHANNELS)
+
+    # Make the raster ~3× taller so individual channel rows are easier to see.
+    # This simply allocates more vertical space for the widget; the image will scale
+    # accordingly, giving each channel several pixels of height instead of one.
+    raster_plot.setMinimumHeight(MAX_CHANNELS * RASTER_ROW_HEIGHT)
+
+    # Image item for raster
+    raster_img = pg.ImageItem(axisOrder="row-major")
+    raster_plot.addItem(raster_img)
+
+    # Ensure full-width view
+    raster_plot.setXRange(0, RASTER_BINS - 1, padding=0)
+    raster_plot.setYRange(0, MAX_CHANNELS - 1, padding=0)
+
+    # Colour map – fallback to grayscale if unavailable
+    try:
+        from pyqtgraph.colormap import getFromMatplotlib
+
+        cmap = getFromMatplotlib("viridis")
+        raster_img.setLookupTable(cmap.getLookupTable(alpha=False))
+    except Exception:
+        pass  # default pg LUT
+
+    # Cursor line
+    cursor_line = pg.InfiniteLine(pos=0, angle=90, pen=pg.mkPen("r"))
+    raster_plot.addItem(cursor_line)
+
+    vlayout.addWidget(raster_plot)
+
     vlayout.addWidget(spike_widget)
 
     container.resize(base_w, base_h)
@@ -495,18 +667,19 @@ def main():
     # ----------------------------------------------------------------------------
 
     rx: ReceiverThread | None = None  # spike tap receiver
-    gpio_rx: GPIORxThread | None = None  # background GPIO receiver
+    gpio_rx: GPIORxThread | None = None  # background GPIO reader
+    cnt_rx: CountRxThread | None = None  # spike-count receiver
     gpio_level: int = 0  # last sampled level (0/1)
     prev_gpio_level: int = -1  # sentinel to detect changes
 
     def _connect_and_start_receiver():  # runs in a worker thread
-        nonlocal rx, gpio_rx
+        nonlocal rx, gpio_rx, cnt_rx
         try:
             tap = Tap(args.device_ip)
             tap.connect(args.tap_name)
             print(f"Connected to {args.tap_name} @ {args.device_ip}")
 
-            rx = ReceiverThread(tap, output_path)
+            rx = ReceiverThread(tap)
             rx.start()
 
             # ---------------- GPIO tap ----------------
@@ -519,6 +692,17 @@ def main():
                 gpio_rx.start()
             except Exception as exc:
                 print(f"GPIO tap connection failed: {exc}", file=sys.stderr)
+
+            # --------------- Spike-count tap -----------------
+            try:
+                tap_c = Tap(args.device_ip)
+                tap_c.connect(args.spike_count_tap)
+                print(f"Connected to {args.spike_count_tap} @ {args.device_ip}")
+
+                cnt_rx = CountRxThread(tap_c)
+                cnt_rx.start()
+            except Exception as exc:
+                print(f"Spike-count tap connection failed: {exc}", file=sys.stderr)
         except Exception as exc:
             QtCore.QTimer.singleShot(
                 0,
@@ -559,9 +743,16 @@ def main():
     last_stats_update = time.time()
     last_drop: float | None = None
     last_bw: float | None = None
+    last_bins_rate: float | None = None
 
     # Sliding-window counts for GUI-render stats: entries are (timestamp, plotted, dropped)
     gui_stats: deque[tuple[float, int, int]] = deque()
+
+    import numpy as np  # needed for raster arrays
+
+    # Pre-allocate raster buffer (channels × bins)
+    raster_buf = np.zeros((MAX_CHANNELS, RASTER_BINS), dtype=np.uint16)
+    raster_cursor = 0  # next column to write (0..RASTER_BINS-1)
 
     def _update_cell_sizes():
         """Adapt column widths and row heights to current window size."""
@@ -574,7 +765,11 @@ def main():
 
         # Compute available size excluding padding.
         avail_w = max(100, container.width() - PAD_W)
-        avail_h = max(100, container.height() - stats_widget.height() - PAD_H)
+        # Subtract raster height to keep waveform grid visible
+        avail_h = max(
+            100,
+            container.height() - stats_widget.height() - raster_plot.height() - PAD_H,
+        )
 
         col_width = int(avail_w / n_cols)
         row_height = int(avail_h / max(1, n_rows))
@@ -600,7 +795,7 @@ def main():
         _last_cell_size = (col_width, row_height)
 
     def update_gui():
-        nonlocal current_window_start, first_ts, local_start_time, last_stats_update, last_drop, last_bw, WAVEFORM_LEN, PER_WF_LEN, RING_CAPACITY, shared_ring_x, ring_y, ring_head, ring_count, rx, gpio_rx, gpio_level, prev_gpio_level, gpio_dot
+        nonlocal current_window_start, first_ts, local_start_time, last_stats_update, last_drop, last_bw, last_bins_rate, WAVEFORM_LEN, PER_WF_LEN, RING_CAPACITY, shared_ring_x, ring_y, ring_head, ring_count, rx, gpio_rx, cnt_rx, gpio_level, prev_gpio_level, gpio_dot, plot_map, raster_buf, raster_cursor, raster_img, cursor_line
 
         # Receiver not yet connected – nothing to do
         if rx is None:
@@ -610,6 +805,52 @@ def main():
         _update_cell_sizes()
 
         batch = rx.pop_batch(MAX_POP_PER_TICK)
+
+        # -----------------------------------------------------------
+        # Spike-count raster update (may advance even if no waveforms)
+        # -----------------------------------------------------------
+        if cnt_rx is not None:
+            got = True
+            while got:
+                item = cnt_rx.pop_next()
+                if item is None:
+                    got = False
+                    break
+                _, counts_vec = item
+                # Ensure vector length (MAX_CHANNELS rows)
+                if counts_vec.size >= MAX_CHANNELS:
+                    counts_slice = counts_vec[:MAX_CHANNELS]
+                else:
+                    counts_slice = np.pad(
+                        counts_vec, (0, MAX_CHANNELS - counts_vec.size), "constant"
+                    )
+
+                raster_buf[:, raster_cursor] = counts_slice
+                # Advance cursor (wrap around)
+                raster_cursor = (raster_cursor + 1) % RASTER_BINS
+
+            # Display raster as-is (circular buffer); cursor shows current write position.
+            display_img = raster_buf  # channel 0 top row
+
+            # Dynamic level scaling – use max count for colour stretch but
+            # avoid degenerate 0 range.
+            vmax = int(display_img.max())
+            if vmax == 0:
+                vmax = 1
+
+            # Force a fresh numpy object each frame so pyqtgraph does not skip
+            # the update when the underlying data buffer is mutated in-place.
+            # A shallow .copy() is cheap (∼40 kB per frame) and ensures the image
+            # refreshes at the full GUI timer rate (~40 Hz).
+            raster_img.setImage(
+                display_img.copy(),  # new backing array every call
+                levels=(0, RASTER_CMAP_MAX),
+                autoLevels=False,
+                autoRange=False,
+            )
+            cursor_line.setPos(raster_cursor)
+
+        # If there are no spike batches, we may still update GUI for raster/stats.
 
         # --- GPIO level from background reader ---------------------------
         if gpio_rx is not None:
@@ -673,6 +914,14 @@ def main():
                     RING_CAPACITY,
                 ).astype(np.float32)
 
+                # Adjust X-axis range of all channel plots to new waveform length
+                for _plot in plot_map.values():
+                    try:
+                        _plot.setXRange(0, WAVEFORM_LEN - 1)
+                        _plot.disableAutoRange(axis="x")
+                    except Exception:
+                        pass
+
             # Ensure this channel has its ring buffer allocated
             if ch_id not in ring_y:
                 ring_y[ch_id] = np.full(
@@ -720,9 +969,14 @@ def main():
         else:
             drop_gui_pct = 0.0
 
+        bins_rate = None  # default – will be stored in last_bins_rate when updated
+
         # Network stats refresh once per second
         if now_wall - last_stats_update >= 1.0:
-            last_drop, last_bw = rx.get_stats()
+            last_drop, last_bw = rx.get_stats() if rx else (None, None)
+            bins_rate = cnt_rx.get_rate() if cnt_rx else None
+            if bins_rate is not None:
+                last_bins_rate = bins_rate
             last_stats_update = now_wall
 
         # Prepare horizontal stats segments for the header row
@@ -737,7 +991,11 @@ def main():
         if last_drop is not None:
             segments.append(f"Dropped: {last_drop*100:5.2f}%")
             segments.append(f"Unplotted: {drop_gui_pct*100:5.2f}%")
-            segments.append(f"BW: {last_bw:5.2f}Mbps")
+            if last_bw is not None:
+                segments.append(f"BW: {last_bw:5.2f}Mbps")
+
+        if last_bins_rate is not None:
+            segments.append(f"Bins/s: {last_bins_rate:4.0f}")
 
         # Render the stats line (single label spanning columns)
         _update_stats_text(segments)
@@ -769,6 +1027,11 @@ def main():
         # (gpio_dot updated above)
 
     timer = QtCore.QTimer()
+    try:
+        timer.setTimerType(QtCore.Qt.PreciseTimer)  # ensure max resolution (~1 ms)
+    except Exception:
+        pass  # older PyQt versions
+
     timer.timeout.connect(update_gui)
 
     timer.start(GUI_UPDATE_INTERVAL_MS)
@@ -785,6 +1048,8 @@ def main():
             rx.stop()
         if gpio_rx and gpio_rx.is_alive():
             gpio_rx.stop()
+        if cnt_rx and cnt_rx.is_alive():
+            cnt_rx.stop()
 
     QtCore.QCoreApplication.instance().aboutToQuit.connect(_stop_rx)
 
@@ -795,6 +1060,8 @@ def main():
             rx.stop()  # stop already joins internally
         if gpio_rx and gpio_rx.is_alive():
             gpio_rx.stop()
+        if cnt_rx and cnt_rx.is_alive():
+            cnt_rx.stop()
 
 
 if __name__ == "__main__":

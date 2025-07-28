@@ -298,6 +298,12 @@ namespace app
 
     const size_t sample_count = filtered_data[0].size();
 
+    // Collect at most one waveform per channel for this bin
+    std::vector<std::vector<int8_t>> batched_waveforms;
+    std::vector<uint8_t> batched_channel_ids;
+    batched_waveforms.reserve(channel_count);
+    batched_channel_ids.reserve(channel_count);
+
     // ---------------- Artefact mask (cross-channel) -------------------------
     std::vector<uint8_t> artefact(sample_count, 0); // 1 = artefact
 
@@ -425,9 +431,30 @@ namespace app
 
               uint64_t ts_ns = bin_start_ts_ns + static_cast<uint64_t>(i * sample_period_ns);
 
-              // Count spike for this channel instead of publishing waveform
+              // --------------------------------------------------------------
+              // Increment per-bin spike count and capture one waveform per
+              // channel for batched publishing later.
+              // --------------------------------------------------------------
               if (bin_counts[ch] < std::numeric_limits<uint16_t>::max())
                   ++bin_counts[ch];
+
+              // Ensure we only capture at most one waveform per channel in this bin
+              const uint8_t ch_id_u8 = static_cast<uint8_t>(electrode_indices_[ch] & 0xFF);
+              if (std::find(batched_channel_ids.begin(), batched_channel_ids.end(), ch_id_u8) == batched_channel_ids.end())
+              {
+                  // Quantise waveform to INT8 (-128…127)
+                  std::vector<int8_t> qwf;
+                  qwf.reserve(waveform.size());
+                  for (float v : waveform)
+                  {
+                      int q = static_cast<int>(std::lround(v));
+                      q = clamp<int>(q, -128, 127);
+                      qwf.push_back(static_cast<int8_t>(q));
+                  }
+
+                  batched_waveforms.push_back(std::move(qwf));
+                  batched_channel_ids.push_back(ch_id_u8);
+              }
  
               last_spike_sample_idx_[ch] = global_idx;
             }
@@ -459,6 +486,44 @@ namespace app
     if (!publish_tap("spike_counts", cnt_tensor))
     {
         spdlog::warn("Failed to publish spike_counts tensor");
+    }
+
+    /* ---------------- Publish batched waveforms --------------------------- */
+    if (!batched_waveforms.empty())
+    {
+        synapse::Tensor waveform_tensor;
+        waveform_tensor.set_timestamp_ns(bin_start_ts_ns);
+        waveform_tensor.set_dtype(synapse::Tensor_DType_DT_INT8);
+        waveform_tensor.set_endianness(synapse::Tensor_Endianness_TENSOR_LITTLE_ENDIAN);
+
+        const int32_t row_len = static_cast<int32_t>(waveform_size_ + 2); // seq + ch + waveform
+
+        // Shape: [N, W]
+        waveform_tensor.mutable_shape()->Clear();
+        waveform_tensor.mutable_shape()->Add(static_cast<int32_t>(batched_waveforms.size()));
+        waveform_tensor.mutable_shape()->Add(row_len);
+
+        // Payload: seq, channel, waveform
+        std::vector<int8_t> payload;
+        payload.reserve(batched_waveforms.size() * row_len);
+        for (size_t idx = 0; idx < batched_waveforms.size(); ++idx)
+        {
+            payload.push_back(static_cast<int8_t>(spike_seq_ & 0xFF));
+            payload.push_back(batched_channel_ids[idx]);
+            const auto& qwf = batched_waveforms[idx];
+            payload.insert(payload.end(), qwf.begin(), qwf.end());
+
+            spike_seq_ = (spike_seq_ + 1) & 0xFF;
+        }
+
+        waveform_tensor.set_data(std::string(reinterpret_cast<const char*>(payload.data()), payload.size() * sizeof(int8_t)));
+
+        if (!publish_tap("spike_waveforms", waveform_tensor))
+        {
+            spdlog::warn("Failed to publish batched spike waveforms");
+        }
+        batched_waveforms.clear();
+        batched_channel_ids.clear();
     }
   }
 

@@ -68,8 +68,10 @@ class SpikeDetectorApp : public synapse::App {
 
   // Match offline spike detector which uses 3 × RMS (operating in µV units)
   const float threshold_std_   = 3.0f;        // N × RMS
-  const uint32_t waveform_size_ = 50;         // samples per waveform
-  const uint32_t half_wave_     = waveform_size_ / 2;
+  const uint32_t waveform_size_ = 32;         // samples per waveform
+  // Number of pre-threshold samples to capture (~1/3 of waveform)
+  // This gives us roughly a 1:2 ratio of pre- to post-threshold samples
+  const uint32_t half_wave_     = waveform_size_ / 3;
 
   uint32_t refractory_samples_ = 0;  // set once we know sample rate
 
