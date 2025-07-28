@@ -605,7 +605,7 @@
       "type": "kDiskWriter",
       "id": 3,
       "disk_writer": {
-        "filename": "gpio_test"
+        "filename": "test_20250727"
       }
     }
   ],

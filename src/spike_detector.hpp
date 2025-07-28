@@ -21,10 +21,6 @@ namespace app {
 //   * timestamp_ns : uint64
 //   * channel_id   : uint32
 //   * waveform     : repeated float (waveform samples in micro-volts)
-//
-// The application continuously streams BroadbandFrame data, applies a band-pass
-// filter, runs threshold-based spike detection, and publishes each SpikeEvent
-// immediately.
 class SpikeDetectorApp : public synapse::App {
  public:
   SpikeDetectorApp();
@@ -51,8 +47,6 @@ class SpikeDetectorApp : public synapse::App {
 
   // Parse channel ranges in the first BroadbandFrame to populate electrode and GPIO indices.
   void parse_channel_indices(const synapse::BroadbandFrame& frame);
-
-  // No built-in spike detector; we implement RMS detection directly.
 
   /* ----------------------------------------------------------------------- */
   // State
@@ -101,12 +95,18 @@ class SpikeDetectorApp : public synapse::App {
   const float max_amplitude_positive_ = 200.0f;  // µV
   const float max_amplitude_negative_ = -250.0f; // µV
 
+  // ---------------- Artefact rejection ----------------------------------
+  // If more than this proportion of channels cross threshold simultaneously
+  // we consider the sample an artefact and ignore spikes around it.
+  const float artefact_channel_ratio_ = 0.5f;   // 50 %
+  // Window (samples) around the artefact sample to suppress (±window/2).
+  uint32_t artefact_window_samples_ = 6; // set once sample rate known (~0.2 ms)
+
   // Monotonically increasing sequence number for each published spike (wraps at 2^32)
   uint32_t spike_seq_ = 0;
 
-  // Apply zero-phase (forward-backward) band-pass filtering to a vector of samples.
-  // Returns a new vector of equal length.
-  std::vector<float> zero_phase_filter(size_t channel_idx, const std::vector<float>& samples);
+  // Binning parameters
+  static constexpr float kBinMs = 25.0f; // size of each spike-count bin
 };
 
 }  // namespace app

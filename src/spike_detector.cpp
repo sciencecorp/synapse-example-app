@@ -28,10 +28,17 @@ namespace app
       return false;
     }
 
-    // Create a tap that we will use to stream spike waveforms as Tensor messages.
+    // Create a tap to stream spike waveforms.
     if (!create_tap<synapse::Tensor>("spike_waveforms"))
     {
       spdlog::error("Failed to create spike_waveforms tap");
+      return false;
+    }
+
+    // Create a tap to stream binned spikes.
+    if (!create_tap<synapse::Tensor>("spike_counts"))
+    {
+      spdlog::error("Failed to create spike_counts tap");
       return false;
     }
 
@@ -48,7 +55,7 @@ namespace app
 
   void SpikeDetectorApp::main()
   {
-    constexpr float kBinMs = 10.0f;  // Gather 10 ms worth of frames for processing.
+    constexpr float kBinMs = app::SpikeDetectorApp::kBinMs;  // 25-ms bins
     std::vector<synapse::BroadbandFrame> frames;
 
     while (node_running_)
@@ -97,7 +104,7 @@ namespace app
         continue;
       }
 
-      /* ----------------- Zero-phase filter and collect samples ------------ */
+      /* ----------------- Causal filter and collect samples --------------- */
       const size_t channel_count = electrode_indices_.size();
       const size_t gpio_count    = gpio_indices_.size();
 
@@ -131,11 +138,16 @@ namespace app
         }
       }
 
-      // ---------- Apply zero-phase band-pass filtering -------------------
+      // ---------- Apply causal band-pass filtering (single forward pass) --
       std::vector<std::vector<float>> filtered_data(channel_count);
       for (size_t ch = 0; ch < channel_count; ++ch)
       {
-        filtered_data[ch] = zero_phase_filter(ch, raw_data[ch]);
+        filtered_data[ch].reserve(raw_data[ch].size());
+        for (float sample : raw_data[ch])
+        {
+          float y = bandpass_filters_[ch]->filter(sample); // causal IIR
+          filtered_data[ch].push_back(y);
+        }
       }
 
       /* --------------- Update RMS and run spike detection ------------------ */
@@ -255,6 +267,9 @@ namespace app
     filters_ready_ = true;
     spdlog::info("Initialised {} band-pass filters ({}–{} Hz, order {})", channel_count,
                  low_cutoff_hz_, high_cutoff_hz_, kFilterOrder);
+
+    // Set artefact suppression window (~0.5 ms) once we know the sample rate.
+    artefact_window_samples_ = static_cast<uint32_t>(std::round(sample_rate_hz_ * 0.0005f));
   }
 
   void SpikeDetectorApp::update_running_rms(const std::vector<std::vector<float>>& filtered_data)
@@ -278,7 +293,58 @@ namespace app
   {
     const double sample_period_ns = 1e9 / sample_rate_hz_;
 
-    for (size_t ch = 0; ch < filtered_data.size(); ++ch)
+    const size_t channel_count = filtered_data.size();
+    if (channel_count == 0) return;
+
+    const size_t sample_count = filtered_data[0].size();
+
+    // ---------------- Artefact mask (cross-channel) -------------------------
+    std::vector<uint8_t> artefact(sample_count, 0); // 1 = artefact
+
+    // Pre-compute per-channel thresholds
+    std::vector<float> neg_threshold(channel_count);
+    for (size_t ch = 0; ch < channel_count; ++ch)
+    {
+        neg_threshold[ch] = -threshold_std_ * static_cast<float>(running_rms_[ch]);
+    }
+
+    for (size_t s = 0; s < sample_count; ++s)
+    {
+        size_t crossings = 0;
+        for (size_t ch = 0; ch < channel_count; ++ch)
+        {
+            if (filtered_data[ch][s] < neg_threshold[ch])
+                ++crossings;
+        }
+        if (crossings > artefact_channel_ratio_ * channel_count)
+        {
+            artefact[s] = 1;
+        }
+    }
+
+    // Expand artefact samples by ±window to cover residual transients
+    if (artefact_window_samples_ > 0)
+    {
+        std::vector<uint8_t> expanded = artefact;
+        const int w = static_cast<int>(artefact_window_samples_);
+        for (size_t s = 0; s < sample_count; ++s)
+        {
+            if (!artefact[s]) continue;
+            const int start = static_cast<int>(s) - w;
+            const int end   = static_cast<int>(s) + w;
+            for (int k = start; k <= end; ++k)
+            {
+                if (k >= 0 && k < static_cast<int>(sample_count)) expanded[k] = 1;
+            }
+        }
+        artefact.swap(expanded);
+    }
+
+    // Initialise count vector for this bin
+    const size_t channel_count_total = filtered_data.size();
+    std::vector<uint16_t> bin_counts(channel_count_total, 0);
+
+    for (size_t ch = 0; ch < channel_count_total; ++ch)
     {
       const auto& samples = filtered_data[ch];
       auto& pre_buf       = pre_buffers_[ch];
@@ -291,7 +357,8 @@ namespace app
 
         bool candidate = (x < -threshold_std_ * running_rms_[ch] &&
                          (global_idx - last_spike_sample_idx_[ch]) > refractory_samples_ &&
-                         i + (waveform_size_ - half_wave_ - 1) < samples.size()); // ensure enough post samples
+                         i + (waveform_size_ - half_wave_ - 1) < samples.size() &&
+                         !artefact[i]); // ensure enough post samples & not artefact
 
         bool valid_spike = false;
 
@@ -358,29 +425,10 @@ namespace app
 
               uint64_t ts_ns = bin_start_ts_ns + static_cast<uint64_t>(i * sample_period_ns);
 
-              synapse::Tensor tensor;
-              tensor.set_timestamp_ns(ts_ns);
-              tensor.set_dtype(synapse::Tensor_DType_DT_INT16);
-              tensor.set_endianness(synapse::Tensor_Endianness_TENSOR_LITTLE_ENDIAN);
-
-              std::vector<int16_t> payload;
-              payload.reserve(waveform.size() + 2); // seq + channel + waveform
-              payload.push_back(static_cast<int16_t>(spike_seq_++));  // sequence number
-              payload.push_back(static_cast<int16_t>(electrode_indices_[ch])); // channel id (original)
-              payload.insert(payload.end(), waveform.begin(), waveform.end());
-
-              // Set tensor shape (seq + channel + waveform)
-              tensor.mutable_shape()->Clear();
-              tensor.mutable_shape()->Add(waveform_size_ + 2);
-
-              const char* data_ptr = reinterpret_cast<const char*>(payload.data());
-              tensor.set_data(std::string(data_ptr, payload.size() * sizeof(int16_t)));
-
-              if (!publish_tap("spike_waveforms", tensor))
-              {
-                spdlog::warn("Failed to publish spike tensor (ch {})", ch);
-              }
-
+              // Count spike for this channel instead of publishing waveform
+              if (bin_counts[ch] < std::numeric_limits<uint16_t>::max())
+                  ++bin_counts[ch];
+ 
               last_spike_sample_idx_[ch] = global_idx;
             }
           }
@@ -395,68 +443,23 @@ namespace app
       // Update sample counter for this channel
       sample_counter_[ch] += samples.size();
     }
-  }
 
-  std::vector<float> SpikeDetectorApp::zero_phase_filter(size_t channel_idx, const std::vector<float>& samples)
-  {
-    if (samples.empty()) return {};
+    /* ---------------- Publish counts tensor --------------------------- */
+    synapse::Tensor cnt_tensor;
+    cnt_tensor.set_timestamp_ns(bin_start_ts_ns);
+    cnt_tensor.set_dtype(synapse::Tensor_DType_DT_UINT16);
+    cnt_tensor.set_endianness(synapse::Tensor_Endianness_TENSOR_LITTLE_ENDIAN);
 
-    // Use reflection padding similar to scipy.signal.filtfilt.  Pad length must be
-    // less than the input length; we cap it at 150 samples (≈5 ms @ 30 kHz) or
-    // half the vector minus one if the bin is shorter.
-    const size_t pad_len = std::min<size_t>(150, (samples.size() > 2 ? samples.size() / 2 - 1 : 0));
+    cnt_tensor.mutable_shape()->Clear();
+    cnt_tensor.mutable_shape()->Add(static_cast<int32_t>(bin_counts.size()));
 
-    // ----------------------------------------------------------------
-    // Build the padded vector using reflection (… 3 2 1 | 1 2 3 4 5 | 5 4 3 …)
-    // This removes the step at the boundaries and minimises start-up transients.
-    // ----------------------------------------------------------------
-    std::vector<float> padded;
-    padded.reserve(pad_len + samples.size() + pad_len);
+    const char* cnt_ptr = reinterpret_cast<const char*>(bin_counts.data());
+    cnt_tensor.set_data(std::string(cnt_ptr, bin_counts.size() * sizeof(uint16_t)));
 
-    // Front reflection: reverse of first pad_len samples (exclude the very first point)
-    for (size_t i = pad_len; i > 0; --i)
+    if (!publish_tap("spike_counts", cnt_tensor))
     {
-      padded.push_back(samples[i - 1]);
+        spdlog::warn("Failed to publish spike_counts tensor");
     }
-
-    // Real samples
-    padded.insert(padded.end(), samples.begin(), samples.end());
-
-    // Back reflection: reverse of last pad_len samples (exclude last point)
-    for (size_t i = 0; i < pad_len; ++i)
-    {
-      padded.push_back(samples[samples.size() - 2 - i]);
-    }
-
-    // ----------------------------------------------------------------
-    // Forward pass
-    // ----------------------------------------------------------------
-    auto forward_filter = synapse::create_bandpass_filter<kFilterOrder>(sample_rate_hz_, low_cutoff_hz_, high_cutoff_hz_);
-    std::vector<float> forward_out;
-    forward_out.reserve(padded.size());
-    for (float x : padded)
-    {
-      forward_out.push_back(forward_filter->filter(x));
-    }
-
-    // ----------------------------------------------------------------
-    // Reverse & backward pass
-    // ----------------------------------------------------------------
-    std::reverse(forward_out.begin(), forward_out.end());
-    auto backward_filter = synapse::create_bandpass_filter<kFilterOrder>(sample_rate_hz_, low_cutoff_hz_, high_cutoff_hz_);
-    std::vector<float> backward_out;
-    backward_out.reserve(forward_out.size());
-    for (float x : forward_out)
-    {
-      backward_out.push_back(backward_filter->filter(x));
-    }
-    std::reverse(backward_out.begin(), backward_out.end());
-
-    // ----------------------------------------------------------------
-    // Remove padding and return the central (unpadded) portion.
-    // ----------------------------------------------------------------
-    std::vector<float> result(backward_out.begin() + pad_len, backward_out.begin() + pad_len + samples.size());
-    return result;
   }
 
   void SpikeDetectorApp::parse_channel_indices(const synapse::BroadbandFrame& frame)

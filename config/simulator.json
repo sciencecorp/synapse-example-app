@@ -17,102 +17,583 @@
         "signal": {
           "electrode": {
             "channels": [
-              { "id": 0, "electrode_id": 1, "reference_id": 513 },
-              { "id": 1, "electrode_id": 2, "reference_id": 513 },
-              { "id": 2, "electrode_id": 3, "reference_id": 513 },
-              { "id": 3, "electrode_id": 4, "reference_id": 513 },
-              { "id": 4, "electrode_id": 5, "reference_id": 513 },
-              { "id": 5, "electrode_id": 6, "reference_id": 513 },
-              { "id": 6, "electrode_id": 7, "reference_id": 513 },
-              { "id": 7, "electrode_id": 8, "reference_id": 513 },
-              { "id": 8, "electrode_id": 9, "reference_id": 513 },
-              { "id": 9, "electrode_id": 10, "reference_id": 513 },
-              { "id": 10, "electrode_id": 11, "reference_id": 513 },
-              { "id": 11, "electrode_id": 12, "reference_id": 513 },
-              { "id": 12, "electrode_id": 13, "reference_id": 513 },
-              { "id": 13, "electrode_id": 14, "reference_id": 513 },
-              { "id": 14, "electrode_id": 15, "reference_id": 513 },
-              { "id": 15, "electrode_id": 16, "reference_id": 513 },
-              { "id": 16, "electrode_id": 17, "reference_id": 513 },
-              { "id": 17, "electrode_id": 18, "reference_id": 513 },
-              { "id": 18, "electrode_id": 19, "reference_id": 513 },
-              { "id": 19, "electrode_id": 20, "reference_id": 513 },
-              { "id": 20, "electrode_id": 21, "reference_id": 513 },
-              { "id": 21, "electrode_id": 22, "reference_id": 513 },
-              { "id": 22, "electrode_id": 23, "reference_id": 513 },
-              { "id": 23, "electrode_id": 24, "reference_id": 513 },
-              { "id": 24, "electrode_id": 25, "reference_id": 513 },
-              { "id": 25, "electrode_id": 26, "reference_id": 513 },
-              { "id": 26, "electrode_id": 27, "reference_id": 513 },
-              { "id": 27, "electrode_id": 28, "reference_id": 513 },
-              { "id": 28, "electrode_id": 29, "reference_id": 513 },
-              { "id": 29, "electrode_id": 30, "reference_id": 513 },
-              { "id": 30, "electrode_id": 31, "reference_id": 513 },
-              { "id": 31, "electrode_id": 32, "reference_id": 513 },
-              { "id": 32, "electrode_id": 33, "reference_id": 513 },
-              { "id": 33, "electrode_id": 34, "reference_id": 513 },
-              { "id": 34, "electrode_id": 35, "reference_id": 513 },
-              { "id": 35, "electrode_id": 36, "reference_id": 513 },
-              { "id": 36, "electrode_id": 37, "reference_id": 513 },
-              { "id": 37, "electrode_id": 38, "reference_id": 513 },
-              { "id": 38, "electrode_id": 39, "reference_id": 513 },
-              { "id": 39, "electrode_id": 40, "reference_id": 513 },
-              { "id": 40, "electrode_id": 41, "reference_id": 513 },
-              { "id": 41, "electrode_id": 42, "reference_id": 513 },
-              { "id": 42, "electrode_id": 43, "reference_id": 513 },
-              { "id": 43, "electrode_id": 44, "reference_id": 513 },
-              { "id": 44, "electrode_id": 45, "reference_id": 513 },
-              { "id": 45, "electrode_id": 46, "reference_id": 513 },
-              { "id": 46, "electrode_id": 47, "reference_id": 513 },
-              { "id": 47, "electrode_id": 48, "reference_id": 513 },
-              { "id": 48, "electrode_id": 49, "reference_id": 513 },
-              { "id": 49, "electrode_id": 50, "reference_id": 513 },
-              { "id": 50, "electrode_id": 51, "reference_id": 513 },
-              { "id": 51, "electrode_id": 52, "reference_id": 513 },
-              { "id": 52, "electrode_id": 53, "reference_id": 513 },
-              { "id": 53, "electrode_id": 54, "reference_id": 513 },
-              { "id": 54, "electrode_id": 55, "reference_id": 513 },
-              { "id": 55, "electrode_id": 56, "reference_id": 513 },
-              { "id": 56, "electrode_id": 57, "reference_id": 513 },
-              { "id": 57, "electrode_id": 58, "reference_id": 513 },
-              { "id": 58, "electrode_id": 59, "reference_id": 513 },
-              { "id": 59, "electrode_id": 60, "reference_id": 513 },
-              { "id": 60, "electrode_id": 61, "reference_id": 513 },
-              { "id": 61, "electrode_id": 62, "reference_id": 513 },
-              { "id": 62, "electrode_id": 63, "reference_id": 513 },
-              { "id": 63, "electrode_id": 64, "reference_id": 513 },
-              { "id": 64, "electrode_id": 65, "reference_id": 513 },
-              { "id": 65, "electrode_id": 66, "reference_id": 513 },
-              { "id": 66, "electrode_id": 67, "reference_id": 513 },
-              { "id": 67, "electrode_id": 68, "reference_id": 513 },
-              { "id": 68, "electrode_id": 69, "reference_id": 513 },
-              { "id": 69, "electrode_id": 70, "reference_id": 513 },
-              { "id": 70, "electrode_id": 71, "reference_id": 513 },
-              { "id": 71, "electrode_id": 72, "reference_id": 513 },
-              { "id": 72, "electrode_id": 73, "reference_id": 513 },
-              { "id": 73, "electrode_id": 74, "reference_id": 513 },
-              { "id": 74, "electrode_id": 75, "reference_id": 513 },
-              { "id": 75, "electrode_id": 76, "reference_id": 513 },
-              { "id": 76, "electrode_id": 77, "reference_id": 513 },
-              { "id": 77, "electrode_id": 78, "reference_id": 513 },
-              { "id": 78, "electrode_id": 79, "reference_id": 513 },
-              { "id": 79, "electrode_id": 80, "reference_id": 513 },
-              { "id": 80, "electrode_id": 81, "reference_id": 513 },
-              { "id": 81, "electrode_id": 82, "reference_id": 513 },
-              { "id": 82, "electrode_id": 83, "reference_id": 513 },
-              { "id": 83, "electrode_id": 84, "reference_id": 513 },
-              { "id": 84, "electrode_id": 85, "reference_id": 513 },
-              { "id": 85, "electrode_id": 86, "reference_id": 513 },
-              { "id": 86, "electrode_id": 87, "reference_id": 513 },
-              { "id": 87, "electrode_id": 88, "reference_id": 513 },
-              { "id": 88, "electrode_id": 89, "reference_id": 513 },
-              { "id": 89, "electrode_id": 90, "reference_id": 513 },
-              { "id": 90, "electrode_id": 91, "reference_id": 513 },
-              { "id": 91, "electrode_id": 92, "reference_id": 513 },
-              { "id": 92, "electrode_id": 93, "reference_id": 513 },
-              { "id": 93, "electrode_id": 94, "reference_id": 513 },
-              { "id": 94, "electrode_id": 95, "reference_id": 513 },
-              { "id": 95, "electrode_id": 96, "reference_id": 513 }
+              {
+                "id": 0,
+                "electrode_id": 18,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 1,
+                "electrode_id": 134,
+                "reference_id": 514,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 2,
+                "electrode_id": 8,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 3,
+                "electrode_id": 6,
+                "reference_id": 512,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 4,
+                "electrode_id": 262,
+                "reference_id": 516,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 5,
+                "electrode_id": 392,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 6,
+                "electrode_id": 402,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 7,
+                "electrode_id": 408,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 8,
+                "electrode_id": 30,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 9,
+                "electrode_id": 24,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 10,
+                "electrode_id": 4,
+                "reference_id": 512,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 11,
+                "electrode_id": 0,
+                "reference_id": 512,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 12,
+                "electrode_id": 2,
+                "reference_id": 512,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 13,
+                "electrode_id": 386,
+                "reference_id": 518,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 14,
+                "electrode_id": 390,
+                "reference_id": 518,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 15,
+                "electrode_id": 396,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 16,
+                "electrode_id": 414,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 17,
+                "electrode_id": 420,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 18,
+                "electrode_id": 38,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 19,
+                "electrode_id": 36,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 20,
+                "electrode_id": 160,
+                "reference_id": 515,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 21,
+                "electrode_id": 12,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 22,
+                "electrode_id": 132,
+                "reference_id": 514,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 23,
+                "electrode_id": 384,
+                "reference_id": 518,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 24,
+                "electrode_id": 388,
+                "reference_id": 518,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 25,
+                "electrode_id": 260,
+                "reference_id": 516,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 26,
+                "electrode_id": 292,
+                "reference_id": 517,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 27,
+                "electrode_id": 422,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 28,
+                "electrode_id": 48,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 29,
+                "electrode_id": 164,
+                "reference_id": 515,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 30,
+                "electrode_id": 44,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 31,
+                "electrode_id": 50,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 32,
+                "electrode_id": 42,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 33,
+                "electrode_id": 404,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 34,
+                "electrode_id": 426,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 35,
+                "electrode_id": 410,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 36,
+                "electrode_id": 432,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 37,
+                "electrode_id": 438,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 38,
+                "electrode_id": 60,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 39,
+                "electrode_id": 54,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 40,
+                "electrode_id": 56,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 41,
+                "electrode_id": 62,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 42,
+                "electrode_id": 14,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 43,
+                "electrode_id": 398,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 44,
+                "electrode_id": 434,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 45,
+                "electrode_id": 288,
+                "reference_id": 517,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 46,
+                "electrode_id": 444,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 47,
+                "electrode_id": 450,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 48,
+                "electrode_id": 72,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 49,
+                "electrode_id": 66,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 50,
+                "electrode_id": 68,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 51,
+                "electrode_id": 74,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 52,
+                "electrode_id": 20,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 53,
+                "electrode_id": 416,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 54,
+                "electrode_id": 446,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 55,
+                "electrode_id": 440,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 56,
+                "electrode_id": 456,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 57,
+                "electrode_id": 462,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 58,
+                "electrode_id": 84,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 59,
+                "electrode_id": 78,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 60,
+                "electrode_id": 80,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 61,
+                "electrode_id": 86,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 62,
+                "electrode_id": 26,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 63,
+                "electrode_id": 428,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 64,
+                "electrode_id": 458,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 65,
+                "electrode_id": 452,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 66,
+                "electrode_id": 468,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 67,
+                "electrode_id": 474,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 68,
+                "electrode_id": 96,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 69,
+                "electrode_id": 90,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 70,
+                "electrode_id": 92,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 71,
+                "electrode_id": 98,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 72,
+                "electrode_id": 32,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 73,
+                "electrode_id": 494,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 74,
+                "electrode_id": 482,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 75,
+                "electrode_id": 470,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 76,
+                "electrode_id": 464,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 77,
+                "electrode_id": 480,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 78,
+                "electrode_id": 108,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 79,
+                "electrode_id": 102,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 80,
+                "electrode_id": 104,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 81,
+                "electrode_id": 110,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 82,
+                "electrode_id": 116,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 83,
+                "electrode_id": 500,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 84,
+                "electrode_id": 488,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 85,
+                "electrode_id": 476,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 86,
+                "electrode_id": 492,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 87,
+                "electrode_id": 486,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 88,
+                "electrode_id": 114,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 89,
+                "electrode_id": 120,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 90,
+                "electrode_id": 126,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 91,
+                "electrode_id": 122,
+                "reference_id": 513,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 92,
+                "electrode_id": 506,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 93,
+                "electrode_id": 510,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 94,
+                "electrode_id": 504,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              {
+                "id": 95,
+                "electrode_id": 498,
+                "reference_id": 519,
+                "type": "ELECTRODE"
+              },
+              { "id": 96, "electrode_id": 0, "type": "GPIO" }
             ],
             "low_cutoff_hz": 57,
             "high_cutoff_hz": 13489
