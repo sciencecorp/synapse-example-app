@@ -46,7 +46,7 @@ synapsectl -u your-device-identifier start ./config/sciplex.json
 To listen for spikes:
 
 ```bash
-python ./client/plot_spikes.py --output-jsonl data/spikes.jsonl --device-ip <your-device-ip> --electrode-map electrode_maps/<your-electrode-map>.json
+python ./client/plot_spikes.py --device-ip <your-device-ip> --electrode-map electrode_maps/<your-electrode-map>.json
 ```
 
 ### Update Cursor Channels
