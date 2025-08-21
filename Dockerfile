@@ -109,7 +109,7 @@ RUN cd "${VCPKG_ROOT}" && \
 # -----------------------------------------------------------------------------
 # Install Synapse SDK from internal repository (same steps on both)
 # -----------------------------------------------------------------------------
-ARG SDK_VERSION=0.5.1
+ARG SDK_VERSION=0.5.2
 COPY keys/science-repo-public.asc /usr/share/keyrings/scifi-repo-science-public.asc
 RUN set -eux; \
     # Add the science repo that hosts synapse-app-sdk and make sure its key is trusted

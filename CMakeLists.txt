@@ -21,6 +21,7 @@ find_package(cppzmq REQUIRED)
 find_package(Protobuf REQUIRED)
 find_package(spdlog REQUIRED CONFIG)
 find_package(iir REQUIRED CONFIG)
+find_package(onnxruntime REQUIRED CONFIG)
 
 if(USE_LOCAL_SDK)
     if(NOT LOCAL_SDK_PATH)
@@ -43,6 +44,7 @@ message(STATUS "SYNAPSE_APP_SDK_LIB: ${SYNAPSE_APP_SDK_LIB}")
 
 add_executable(synapse-spike-detect
     ${CMAKE_CURRENT_SOURCE_DIR}/src/spike_detector.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/decoder.cpp
 )
 
 generate_protobufs(
@@ -76,6 +78,7 @@ target_link_libraries(synapse-spike-detect
 
     PRIVATE
         spdlog::spdlog
+        onnxruntime::onnxruntime
 )
 
 # Packaging configuration

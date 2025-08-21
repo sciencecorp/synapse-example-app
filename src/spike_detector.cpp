@@ -1,14 +1,18 @@
 #include "spike_detector.hpp"
+
 #include <spdlog/spdlog.h>
 #include <thread>
 #include <chrono>
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include <filesystem>
 #include <synapse-app-sdk/middleware/conversions.hpp>
 
 namespace app
 {
+  const int kNumDecoderThreads = 4;
+
   // Helper function to clamp a value between min and max
   template <typename T>
   T clamp(T value, T min, T max)
@@ -21,6 +25,20 @@ namespace app
 
   bool SpikeDetectorApp::setup()
   {
+    // Parse config to determine whether to decode
+    if (!get_app_config(
+        [this](const synapse::ApplicationNodeConfig& configuration) {
+          return validate_config(configuration);
+        },
+        application_config_)) {
+      spdlog::error("Failed to get app config");
+    }
+    
+    if (!parse_config(application_config_)) {
+      spdlog::error("Failed to parse app config");
+      return false;
+    }
+
     const uint32_t broadband_node_id = 1;
     if (!setup_reader(broadband_node_id))
     {
@@ -49,6 +67,15 @@ namespace app
       return false;
     }
 
+    if (enable_decode_) {
+      spdlog::info("Decoding enabled, inferences will be published to 'inferences'.");
+      if (!create_tap<synapse::Tensor>("inferences"))
+      {
+        spdlog::error("Failed to create inferences tap");
+        return false;
+      }
+    }
+
     spdlog::info("SpikeDetectorApp set-up complete – waiting for broadband frames …");
     return true;
   }
@@ -57,6 +84,25 @@ namespace app
   {
     constexpr float kBinMs = app::SpikeDetectorApp::kBinMs;  // 25-ms bins
     std::vector<synapse::BroadbandFrame> frames;
+
+    // Initialize decoder if requested in config
+    if (enable_decode_) {
+      try {
+        decoder_ = std::make_unique<Decoder>(model_path_, kNumDecoderThreads);
+      } catch (const std::exception& e) {
+        spdlog::error("Error while initializing decoder: {}", e.what());
+      }
+
+      try {
+        history_bins_ = std::stoi(decoder_->GetMetadataValue("history_bins"));
+      } catch (const std::exception& e) {
+        spdlog::error("Error with parsing model metadata entry with key 'history_bins' with value \"{}\": {}", 
+          decoder_->GetMetadataValue("history_bins"), e.what());
+      }
+
+      spdlog::info("Inferences will be performed with {} bins of history.", history_bins_);
+      history_buffer_ = std::make_unique<CircularBuffer<std::vector<uint16_t>>>(history_bins_);
+    }
 
     while (node_running_)
     {
@@ -483,6 +529,11 @@ namespace app
     const char* cnt_ptr = reinterpret_cast<const char*>(bin_counts.data());
     cnt_tensor.set_data(std::string(cnt_ptr, bin_counts.size() * sizeof(uint16_t)));
 
+    if (enable_decode_) {
+      // only need history if decoding
+      history_buffer_->push(bin_counts);
+    }
+
     if (!publish_tap("spike_counts", cnt_tensor))
     {
         spdlog::warn("Failed to publish spike_counts tensor");
@@ -525,6 +576,96 @@ namespace app
         batched_waveforms.clear();
         batched_channel_ids.clear();
     }
+
+    /* ---------------- Publish inferences --------------------------- */
+    if (enable_decode_ && history_buffer_->size() >= history_bins_) {
+      // If decoding is enabled and we have enough history
+
+      // Create input tensor from the history
+      auto input_tensor = construct_decoder_input();
+
+      // Infer with decoder
+      auto infer_start = std::chrono::high_resolution_clock::now();
+      auto inferences = decoder_->InferSingleInput(input_tensor);
+      auto infer_end = std::chrono::high_resolution_clock::now();
+      double infer_latency_ms = std::chrono::duration<double, std::milli>(infer_end - infer_start).count();
+
+      // Convert std::vector<Ort::Value> to synapse::Tensor
+      synapse::Tensor inferences_tensor = make_inference_tensor(inferences, bin_start_ts_ns);
+
+      // Publish to tap
+      if (!publish_tap("inferences", inferences_tensor)) {
+        spdlog::warn("Failed to publish inferences");
+      }
+    }
+    else {
+      spdlog::info("not yet enough frames, skipping decode.");
+    }
+
+  }
+
+  // Constructs an input tensor with batch size 1 with the one input tensor 
+  // having shape [history_bins, channeL_count], but flattened
+  std::vector<std::vector<float>> SpikeDetectorApp::construct_decoder_input() const {
+    if (history_buffer_->size() < history_bins_) {
+        // Not enough history yet, return empty or padded
+        return {};
+    }
+    
+    int channel_count = electrode_indices_.size();
+
+    // Get the contents in correct order (oldest to newest)
+    auto history_contents = history_buffer_->contents();
+    
+    // Flatten into 1D: [history_bins_ * channel_count]
+    std::vector<float> flattened;
+    flattened.reserve(history_bins_ * channel_count);
+    
+    for (const auto& bin : history_contents) {
+        // Each bin is a vector<uint16_t> of size channel_count
+        for (uint16_t count : bin) {
+            flattened.push_back(static_cast<float>(count));
+        }
+    }
+
+    // Reshape to 2D: [1, history_bins_ * channel_count]
+    std::vector<std::vector<float>> input_tensor;
+    input_tensor.resize(1);  // 1 row
+    input_tensor[0] = std::move(flattened); 
+
+    return input_tensor;
+  }
+
+  // Constructs the synapse;:Tensor object for a given input
+  synapse::Tensor SpikeDetectorApp::make_inference_tensor(const std::vector<std::vector<float>>& inferences, uint64_t timestamp_ns) {
+    synapse::Tensor tensor;
+    tensor.set_timestamp_ns(timestamp_ns);
+    tensor.set_dtype(synapse::Tensor_DType_DT_FLOAT);
+    tensor.set_endianness(synapse::Tensor_Endianness_TENSOR_LITTLE_ENDIAN);
+    
+    if (inferences.empty()) return tensor;
+    
+    // Get dimensions
+    const int32_t rows = static_cast<int32_t>(inferences.size());
+    const int32_t cols = rows ? static_cast<int32_t>(inferences.front().size()) : 0;
+    
+    // Set shape: [rows, cols]
+    tensor.mutable_shape()->Clear();
+    tensor.mutable_shape()->Add(rows);
+    tensor.mutable_shape()->Add(cols);
+    
+    // Flatten row-major
+    std::vector<float> flat;
+    flat.reserve(static_cast<size_t>(rows) * cols);
+    for (const auto& row : inferences) {
+        flat.insert(flat.end(), row.begin(), row.end());
+    }
+    
+    // Copy data
+    const char* data_ptr = reinterpret_cast<const char*>(flat.data());
+    tensor.set_data(std::string(data_ptr, flat.size() * sizeof(float)));
+    
+    return tensor;
   }
 
   void SpikeDetectorApp::parse_channel_indices(const synapse::BroadbandFrame& frame)
@@ -570,6 +711,39 @@ namespace app
         }
       }
       offset += range.count();
+    }
+  }
+
+  bool SpikeDetectorApp::validate_config(const synapse::ApplicationNodeConfig& configuration) {
+    const auto& parameters = configuration.parameters();
+
+    if (!parameters.contains("enable_decode")) {
+      spdlog::error("enable_decode not found in configuration");
+      return false;
+    }
+    // TODO: kind of ugly... maybe cleaner way to do this
+    else if (parameters.at("enable_decode").bool_value() && !parameters.contains("model_path")) {
+      // model_path must exist only if enable_decode is set to true
+      spdlog::error("model_path not found in configuration when enable_decode=true");
+      return false;
+    }
+
+    return true;
+  }
+
+  bool SpikeDetectorApp::parse_config(const synapse::ApplicationNodeConfig& configuration) {
+    const auto& parameters = configuration.parameters();
+    try {
+      enable_decode_ = parameters.at("enable_decode").bool_value();
+      model_path_    = parameters.at("model_path").string_value();
+      if (enable_decode_ && !std::filesystem::exists(model_path_)) {
+        spdlog::error("File for model_path {} not found when enable_decode=true", model_path_);
+        return false;
+      }
+      return true;
+    } catch (const std::exception& e) {
+      spdlog::error("Failed to parse configuration {}", e.what());
+      return false;
     }
   }
 } // namespace app

@@ -4,7 +4,11 @@
       "type": "kApplication",
       "id": 2,
       "application": {
-        "name": "synapse-spike-detect"
+        "name": "synapse-spike-detect",
+        "parameters": {
+          "enable_decode": true,
+          "model_path": "/tmp/model.onnx"
+        }
       }
     },
     {

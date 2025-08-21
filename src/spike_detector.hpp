@@ -4,6 +4,7 @@
 #include <memory>
 #include <atomic>
 #include <deque>
+#include <string>
 
 #include <synapse-app-sdk/app/app.hpp>
 #include <synapse-app-sdk/utils/time/time.hpp>
@@ -13,6 +14,9 @@
 #include "api/datatype.pb.h"
 #include "api/nodes/broadband_source.pb.h"
 #include "api/channel.pb.h"
+
+#include "decoder.hpp"
+#include "circular_buffer.hpp"
 
 namespace app {
 
@@ -48,10 +52,17 @@ class SpikeDetectorApp : public synapse::App {
   // Parse channel ranges in the first BroadbandFrame to populate electrode and GPIO indices.
   void parse_channel_indices(const synapse::BroadbandFrame& frame);
 
+  // Ensure config keys exist
+  bool validate_config(const synapse::ApplicationNodeConfig& configuration);
+
+  // Parse config file to determine whether to decode
+  bool parse_config(const synapse::ApplicationNodeConfig& configuration);
+  
   /* ----------------------------------------------------------------------- */
   // State
   /* ----------------------------------------------------------------------- */
-
+  synapse::ApplicationNodeConfig application_config_;
+  
   // Track last seen sequence number to warn about dropouts
   uint64_t last_sequence_number_ = 0;
 
@@ -94,6 +105,8 @@ class SpikeDetectorApp : public synapse::App {
   void detect_and_publish(const std::vector<std::vector<float>>& filtered_data,
                           uint64_t bin_start_timestamp_ns);
 
+  std::vector<std::vector<float>> construct_decoder_input() const;
+  synapse::Tensor make_inference_tensor(const std::vector<std::vector<float>>& outputs, uint64_t timestamp_ns);
   const float max_amplitude_positive_ = 200.0f;  // µV
   const float max_amplitude_negative_ = -250.0f; // µV
 
@@ -109,6 +122,13 @@ class SpikeDetectorApp : public synapse::App {
 
   // Binning parameters
   static constexpr float kBinMs = 25.0f; // size of each spike-count bin
+
+  // Decode parameters
+  bool enable_decode_ = false; // whether to also perform inference and publish to `inferences` tap
+  std::string model_path_; // ONNX model to decode with if we so choose to do so
+  std::unique_ptr<Decoder> decoder_; // object for inference
+  std::unique_ptr<CircularBuffer<std::vector<short unsigned int>>> history_buffer_; // buffer to store the last history_bins number of counts
+  int history_bins_; // number of history bins for the history buffer, read from the ONNX model metadata
 };
 
 }  // namespace app
