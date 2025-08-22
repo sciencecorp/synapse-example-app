@@ -40,7 +40,7 @@ synapsectl -u your-device-identifier start ./config/simulator.json
 To start the app with Sciplex:
 
 ```bash
-synapsectl -u your-device-identifier start ./config/sciplex.json
+synapsectl -u your-device-identifier start ./config/<your-config>.json
 ```
 
 To listen for spikes:
