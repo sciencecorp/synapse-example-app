@@ -68,7 +68,6 @@ BIN_MS = 25.0
 WINDOW_SEC = 10.0  # raster window length
 BIN_PER_SEC = int(1000.0 / BIN_MS)
 RASTER_BINS = int(WINDOW_SEC * BIN_PER_SEC)
-MAX_CHANNELS = 96
 
 
 # --------------------------------------------------------------------------------------
@@ -93,6 +92,19 @@ def parse_args() -> argparse.Namespace:
 # --------------------------------------------------------------------------------------
 # Electrode-map helper
 # --------------------------------------------------------------------------------------
+
+
+def count_channels_in_grid(grid: list[list[int | None]]) -> int:
+    """Count the number of non-null channels in the electrode grid.
+
+    Returns the total number of active channels.
+    """
+    channel_count = 0
+    for row in grid:
+        for val in row:
+            if val is not None and isinstance(val, int):
+                channel_count += 1
+    return channel_count
 
 
 def load_electrode_map(path: Path) -> list[list[int | None]]:
@@ -520,6 +532,14 @@ def main():
     electrode_grid = load_electrode_map(Path(args.electrode_map))
     n_rows, n_cols = len(electrode_grid), len(electrode_grid[0])
 
+    # Count the number of active channels in the electrode map
+    num_channels = count_channels_in_grid(electrode_grid)
+    if num_channels == 0:
+        print("Warning: No channels found in electrode map, using default of 128")
+        num_channels = 128
+    else:
+        print(f"Found {num_channels} active channels in electrode map")
+
     # ------------------ sizing logic ------------------
     BASE_CELL_W, BASE_CELL_H = 120.0, 100.0
     header_rows = 0  # stats handled by separate widget
@@ -619,14 +639,14 @@ def main():
     raster_plot.setAspectLocked(False)
 
     # Fixed ranges
-    raster_plot.setLimits(xMin=0, xMax=RASTER_BINS, yMin=0, yMax=MAX_CHANNELS)
+    raster_plot.setLimits(xMin=0, xMax=RASTER_BINS, yMin=0, yMax=num_channels)
     raster_plot.setXRange(0, RASTER_BINS)
-    raster_plot.setYRange(0, MAX_CHANNELS)
+    raster_plot.setYRange(0, num_channels)
 
     # Make the raster ~3× taller so individual channel rows are easier to see.
     # This simply allocates more vertical space for the widget; the image will scale
     # accordingly, giving each channel several pixels of height instead of one.
-    raster_plot.setMinimumHeight(MAX_CHANNELS * RASTER_ROW_HEIGHT)
+    raster_plot.setMinimumHeight(num_channels * RASTER_ROW_HEIGHT)
 
     # Image item for raster
     raster_img = pg.ImageItem(axisOrder="row-major")
@@ -634,7 +654,7 @@ def main():
 
     # Ensure full-width view
     raster_plot.setXRange(0, RASTER_BINS - 1, padding=0)
-    raster_plot.setYRange(0, MAX_CHANNELS - 1, padding=0)
+    raster_plot.setYRange(0, num_channels - 1, padding=0)
 
     # Colour map – fallback to grayscale if unavailable
     try:
@@ -751,7 +771,7 @@ def main():
     import numpy as np  # needed for raster arrays
 
     # Pre-allocate raster buffer (channels × bins)
-    raster_buf = np.zeros((MAX_CHANNELS, RASTER_BINS), dtype=np.uint16)
+    raster_buf = np.zeros((num_channels, RASTER_BINS), dtype=np.uint16)
     raster_cursor = 0  # next column to write (0..RASTER_BINS-1)
 
     def _update_cell_sizes():
@@ -817,12 +837,12 @@ def main():
                     got = False
                     break
                 _, counts_vec = item
-                # Ensure vector length (MAX_CHANNELS rows)
-                if counts_vec.size >= MAX_CHANNELS:
-                    counts_slice = counts_vec[:MAX_CHANNELS]
+                # Ensure vector length (num_channels rows)
+                if counts_vec.size >= num_channels:
+                    counts_slice = counts_vec[:num_channels]
                 else:
                     counts_slice = np.pad(
-                        counts_vec, (0, MAX_CHANNELS - counts_vec.size), "constant"
+                        counts_vec, (0, num_channels - counts_vec.size), "constant"
                     )
 
                 raster_buf[:, raster_cursor] = counts_slice
