@@ -2,6 +2,8 @@
 #include <thread>
 #include <spdlog/spdlog.h>
 #include <chrono>
+#include <fstream>
+#include <sstream>
 
 Decoder::Decoder(const std::string& model_path, int num_threads)
   : model_path_(model_path), 
@@ -205,4 +207,49 @@ std::vector<std::vector<float>> Decoder::InferSingleInput(std::vector<std::vecto
   }
 
   return output_tensors;
+}
+
+void Decoder::PerformSanityTest(std::string test_file) {
+ std::ifstream inf(test_file, std::ifstream::in);
+
+  std::vector<float> flattened_input;
+  std::vector<float> flattened_expected_output;
+
+  std::string line;
+  std::string token;
+
+  // read test input
+  std::getline(inf, line);
+  std::stringstream ss(line);
+  while (std::getline(ss, token, ',')) {
+    spdlog::info("Token: {}", token);
+    flattened_input.push_back(std::stof(token));
+  }
+
+  std::vector<std::vector<float>> input_tensor;
+  input_tensor.resize(1);
+  input_tensor[0] = std::move(flattened_input);
+
+  // read test output
+  std::getline(inf, line);
+  ss.str(line);
+  ss.clear();
+  while (std::getline(ss, token, ',')) {
+    flattened_expected_output.push_back(std::stof(token));
+  }
+
+  // infer
+  auto output_tensor = InferSingleInput(input_tensor);
+  std::vector<float> flattened_output;
+  for (const auto& row : output_tensor) {
+    flattened_output.insert(flattened_output.end(), row.begin(), row.end());
+  }
+
+  assert(flattened_output.size() == flattened_expected_output.size());
+
+  for (size_t i = 0; i < flattened_output.size(); i++) {
+    assert(flattened_output[i] == flattened_expected_output[i]);
+  }
+
+  spdlog::info("Passed decoder sanity test!");
 }

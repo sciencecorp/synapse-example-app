@@ -30,6 +30,12 @@ class Decoder {
 
   // Get the corresponding value for a given key attached to the model's metadata
   std::string GetMetadataValue(const std::string& key) const;
+
+  // Quick sanity check using a test_file to test decoder correctness.
+  // The input file is expected to have two lines of comma separated values. The first line
+  // must contain the input tensor data, flattened. The second line must contain
+  // the expected output tensor data, flattened.
+  void PerformSanityTest(std::string test_file);
  protected:
 
  private: 
@@ -37,14 +43,14 @@ class Decoder {
   void ExtractMetadata();
 
   std::string model_path_;
-  int num_threads_;
+  int num_threads_; // num threads to run ORT computations
   std::unique_ptr<Ort::Env> env_;
   std::unique_ptr<Ort::Session> session_;
   std::vector<std::string> input_names_; // needed to maintain the lifetime of input_names_char_
   std::vector<std::string> output_names_; // needed to maintain the lifetime of output_names_char_
   std::vector<const char*> input_names_char_; // ONNX API requires C-strings to identify nodes
   std::vector<const char*> output_names_char_; // ONNX API requires C-strings to identify nodes
-  std::vector<std::vector<int64_t>> input_shapes_;
-  std::vector<std::vector<int64_t>> output_shapes_;
+  std::vector<std::vector<int64_t>> input_shapes_; // a -1 in a dimension corresponds to batch size
+  std::vector<std::vector<int64_t>> output_shapes_; // a -1 in a dimension corresponds to batch size
   std::unordered_map<std::string, std::string> metadata_;
 }; // class Decoder

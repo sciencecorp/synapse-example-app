@@ -15,7 +15,7 @@
       "type": "kBroadbandSource",
       "id": 1,
       "broadbandSource": {
-        "peripheral_id": 100,
+        "peripheral_id": 102,
         "sample_rate_hz": 32000,
         "bit_width": 12,
         "signal": {

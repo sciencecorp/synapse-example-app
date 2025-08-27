@@ -102,6 +102,8 @@ namespace app
 
       spdlog::info("Inferences will be performed with {} bins of history.", history_bins_);
       history_buffer_ = std::make_unique<CircularBuffer<std::vector<uint16_t>>>(history_bins_);
+
+      //decoder_->PerformSanityTest("/tmp/test_tensors.csv");
     }
 
     while (node_running_)
@@ -580,6 +582,9 @@ namespace app
     /* ---------------- Publish inferences --------------------------- */
     if (enable_decode_ && history_buffer_->size() >= history_bins_) {
       // If decoding is enabled and we have enough history
+      // Can definitely make this part faster by just writing input tensors to a fixed place in memory.
+      // Currently the session_->Run() call in InferSingleInput() is slower than benchmarks, likely in part
+      // to us having unpredictable memory accesses resulting in bad caching... something like that
 
       // Create input tensor from the history
       auto input_tensor = construct_decoder_input();
@@ -587,10 +592,11 @@ namespace app
       // Infer with decoder
       auto infer_start = std::chrono::high_resolution_clock::now();
       auto inferences = decoder_->InferSingleInput(input_tensor);
+      spdlog::info("Inferences = ({}, {})", inferences[0][0], inferences[0][1]);
       auto infer_end = std::chrono::high_resolution_clock::now();
       double infer_latency_ms = std::chrono::duration<double, std::milli>(infer_end - infer_start).count();
 
-      // Convert std::vector<Ort::Value> to synapse::Tensor
+      // Convert std::vector<std::vector<float>> to synapse::Tensor
       synapse::Tensor inferences_tensor = make_inference_tensor(inferences, bin_start_ts_ns);
 
       // Publish to tap
@@ -614,7 +620,7 @@ namespace app
     
     int channel_count = electrode_indices_.size();
 
-    // Get the contents in correct order (oldest to newest)
+    // Get the contents in correct order
     auto history_contents = history_buffer_->contents();
     
     // Flatten into 1D: [history_bins_ * channel_count]
