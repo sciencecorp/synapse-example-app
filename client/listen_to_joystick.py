@@ -52,11 +52,9 @@ def main() -> None:
     args = parse_args()
 
     tap = Tap(args.device_ip)
-    try:
-        tap.connect(args.tap_name)
-    except Exception as exc:
+    if not tap.connect(args.tap_name):
         print(
-            f"Failed to connect to tap '{args.tap_name}' at {args.device_ip}: {exc}",
+            f"Failed to connect to tap '{args.tap_name}' at {args.device_ip}",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -79,9 +77,9 @@ def main() -> None:
                 continue
             print(f"x = {x:.3f}\ty = {y:.3f}")
     except KeyboardInterrupt:
-        print("\nInterrupted — closing tap.")
+        print("\nInterrupted.")
     finally:
-        tap.close()
+        tap.disconnect()
 
 
 if __name__ == "__main__":
