@@ -53,7 +53,7 @@ With your app cloned, you can now try building your app. Remember to have `docke
 The first time you build the application, it might take a long time since it needs to install and build the depedencies in the docker container. Subsequent builds should be faster.
 
 ```
-synapsectl build <path to synapse-example-app>
+synapsectl apps build <path to synapse-example-app>
 ```
 
 Errors during the build should be self descriptive, but feel free to open an [issue](https://github.com/sciencecorp/synapse-python/issues) or contact Science Corporation if you get stuck. If successful, you should see a `Build complete` success message.
@@ -63,7 +63,7 @@ Errors during the build should be self descriptive, but feel free to open an [is
 With a built application, you can now deploy it to run on your device. This will build and package and install your application onto your synapse device.
 
 ```
-synapsectl -u "your-device-identifier" deploy <path to synapse-example-app>
+synapsectl -u "your-device-identifier" apps deploy <path to synapse-example-app>
 ```
 
 If the deployment is successful, you are now ready to start your application.
