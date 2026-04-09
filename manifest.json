@@ -19,7 +19,9 @@
             "window_size": 5,
             "max_expected_rate": 10.0,
             "cursor_channels": [0, 7, 16, 30],
-            "enable_function_profiling": false
+            "enable_function_profiling": false,
+            "enable_inference": false,
+            "model_name": "decoder"
           }
         }
       },

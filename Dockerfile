@@ -109,8 +109,14 @@ RUN cd "${VCPKG_ROOT}" && \
 # -----------------------------------------------------------------------------
 # Install Synapse SDK from local .deb package
 # -----------------------------------------------------------------------------
-COPY synapse-app-sdk_0.5.2_arm64.deb /tmp/synapse-app-sdk.deb
+COPY synapse-app-sdk_0.6.0_arm64.deb /tmp/synapse-app-sdk.deb
 RUN dpkg -i /tmp/synapse-app-sdk.deb && rm /tmp/synapse-app-sdk.deb
+
+# Copy ONNX Runtime shared library into /usr/lib/ so that:
+#   1. The linker can resolve the SDK's transitive dependency on libonnxruntime
+#   2. synapsectl can extract it when packaging the .deb for the target device
+RUN find "${VCPKG_ROOT}/build/host/vcpkg_installed" -name "libonnxruntime*.so*" \
+    -exec cp -a {} /usr/lib/ \;
 
 # -----------------------------------------------------------------------------
 # Export environment variables used by CMake tool-chain
