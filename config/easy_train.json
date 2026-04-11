@@ -11,9 +11,9 @@
           "spike_threshold_uv": 50.0,
           "waveform_size": 50,
           "refractory_period_us": 1000,
-          "window_size": 5,
-          "max_expected_rate": 10.0,
-          "cursor_channels": [0, 7, 16, 30],
+          "window_size": 10,
+          "max_expected_rate": 1.0,
+          "cursor_channels": [3, 4, 22, 25],
           "enable_function_profiling": false,
           "enable_inference": false,
           "model_name": "decoder"

@@ -31,8 +31,14 @@ def _tensor_to_array(raw_bytes):
 
 def tap_reader_thread(device_ip, tap_name, data_queue, stop_event):
     tap = Tap(device_ip)
-    if not tap.connect(tap_name):
-        print(f"[ERROR] Could not connect to tap '{tap_name}'")
+    # Retry connect up to 5 times
+    for attempt in range(5):
+        if tap.connect(tap_name):
+            break
+        print(f"[{tap_name}] Connect attempt {attempt+1} failed, retrying...")
+        time.sleep(2)
+    else:
+        print(f"[ERROR] Could not connect to tap '{tap_name}' after 5 attempts")
         stop_event.set()
         return
     print(f"[{tap_name}] Connected")
@@ -84,12 +90,21 @@ def main():
     label_queue = queue.Queue()
     stop_event  = threading.Event()
 
-    threading.Thread(target=tap_reader_thread,
-                     args=(args.device_ip, 'spike_features', feat_queue, stop_event),
-                     daemon=True).start()
-    threading.Thread(target=tap_reader_thread,
-                     args=(args.device_ip, 'controller_labels', label_queue, stop_event),
-                     daemon=True).start()
+    feat_thread = threading.Thread(
+        target=tap_reader_thread,
+        args=(args.device_ip, 'spike_features', feat_queue, stop_event),
+        daemon=True)
+    feat_thread.start()
+    
+    time.sleep(3)  # Wait for first connection to fully establish
+    
+    label_thread = threading.Thread(
+        target=tap_reader_thread,
+        args=(args.device_ip, 'controller_labels', label_queue, stop_event),
+        daemon=True)
+    label_thread.start()
+
+    time.sleep(3)  # Wait for second connection to settle
 
     print(f"\nRecording {args.duration:.0f}s")
     print("Sweep: UP (hold 2s) -> center -> DOWN -> center -> LEFT -> center -> RIGHT -> center, repeat\n")
