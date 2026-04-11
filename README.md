@@ -5,7 +5,7 @@
 git submodule update --init --recursive
 pip install -r ${REPO_ROOT}/client/requirements.txt
 
-synapsectl build ${REPO_ROOT}
+synapsectl apps build ${REPO_ROOT}
 synapsectl -u "your-device-identifier" deploy ${REPO_ROOT}
 synapsectl -u "your-device-identifier" start ${REPO_ROOT}/config/simulator_32ch.json
 python3 ${REPO_ROOT}/client/listen_to_joystick.py --device-ip <your-device-ip>
