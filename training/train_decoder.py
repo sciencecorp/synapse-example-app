@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-Train a 4-class direction classifier: spike_counts [32] -> direction [UP/DOWN/LEFT/RIGHT]
-Exports to ONNX outputting (x, y) cursor position.
-Usage: python3 training/train_decoder.py --data training_data.npz --out decoder.onnx
+Train 5-class direction classifier including A button.
+Filters out ambiguous transition samples during training.
 """
 
 import argparse
@@ -20,15 +19,6 @@ except ImportError:
     print("pip install torch")
     sys.exit(1)
 
-# Direction mapping — matches game's decode_direction logic
-# x>0=RIGHT, x<0=LEFT, y>0=UP, y<0=DOWN
-DIRECTION_VECTORS = {
-    0: ( 0.0,  1.0),  # UP
-    1: ( 0.0, -1.0),  # DOWN
-    2: (-1.0,  0.0),  # LEFT
-    3: ( 1.0,  0.0),  # RIGHT
-    4: ( 0.0,  0.0),  # NEUTRAL
-}
 
 class DirectionClassifier(nn.Module):
     def __init__(self, n_channels=32, n_classes=5):
@@ -50,61 +40,51 @@ class DirectionClassifier(nn.Module):
     def forward(self, x):
         return self.net(x)
 
-    def predict_xy(self, x):
-        """Output (x, y) cursor position for ONNX export."""
-        logits = self.forward(x)
-        probs = torch.softmax(logits, dim=-1)
-        # Weighted sum of direction vectors
-        vectors = torch.tensor([
-            [0.0,  1.0],   # UP
-            [0.0, -1.0],   # DOWN
-            [-1.0, 0.0],   # LEFT
-            [1.0,  0.0],   # RIGHT
-            [0.0,  0.0],   # NEUTRAL
-        ], dtype=torch.float32)
-        xy = torch.matmul(probs, vectors)
-        return xy
-
 
 class ONNXWrapper(nn.Module):
-    """Outputs (x, y) using one-hot argmax — clean ±1 signals."""
+    """Hard argmax output — clean ±1 signals for the game."""
     def __init__(self, classifier):
         super().__init__()
         self.classifier = classifier
 
     def forward(self, x):
         logits = self.classifier(x)
-        probs = torch.softmax(logits, dim=-1)
-        # Scale up probabilities so argmax winner dominates completely
-        # This gives near-hard outputs while remaining ONNX-exportable
-        scaled = probs * 10.0
-        softmax_hard = torch.softmax(scaled, dim=-1)
+        # Temperature scaling: high temp = hard argmax
+        probs = torch.softmax(logits * 10.0, dim=-1)
         vectors = torch.tensor([
             [ 0.0,  1.0],   # UP
             [ 0.0, -1.0],   # DOWN
             [-1.0,  0.0],   # LEFT
             [ 1.0,  0.0],   # RIGHT
-            [ 0.0,  0.0],   # NEUTRAL
+            [ 0.0,  0.0],   # NEUTRAL/A (center for now)
         ])
-        return torch.matmul(softmax_hard, vectors)
+        return torch.matmul(probs, vectors)
 
 
-def label_to_class(lx, ly, threshold=0.3):
-    """Convert normalised (x, y) label to class index."""
+def label_to_class(lx, ly, deflection_threshold=0.7):
+    """
+    Convert normalised (x, y) to class.
+    Only assigns a direction if joystick is clearly deflected past threshold.
+    Returns None for ambiguous/transition samples — these get filtered out.
+    """
     ax, ay = abs(lx), abs(ly)
-    if ax < threshold and ay < threshold:
+    # Clear neutral
+    if ax < 0.2 and ay < 0.2:
         return 4  # NEUTRAL
-    if ay >= ax:
-        return 0 if ly > 0 else 1  # UP or DOWN
-    else:
+    # Clear direction — must be past threshold
+    if ay >= ax and ay > deflection_threshold:
+        return 0 if ly < 0 else 1  # UP or DOWN — Y axis inverted in label channel
+    if ax > ay and ax > deflection_threshold:
         return 2 if lx < 0 else 3  # LEFT or RIGHT
+    # Ambiguous — filter out
+    return None
 
 
-def load_data(path):
+def load_and_filter_data(path, deflection_threshold=0.7):
     d = np.load(path)
     features = d['features'].astype(np.float32)
     labels   = d['labels'].astype(np.float32)
-    print(f"Loaded {len(features)} samples")
+    print(f"Loaded {len(features)} raw samples")
 
     # Normalise labels to [-1, 1]
     for i in range(2):
@@ -112,14 +92,25 @@ def load_data(path):
         if vmax > 1.0 or vmin < -1.0:
             labels[:, i] = 2 * (labels[:, i] - vmin) / (vmax - vmin + 1e-8) - 1.0
 
-    # Convert to class indices
-    classes = np.array([label_to_class(labels[i,0], labels[i,1])
-                        for i in range(len(labels))], dtype=np.int64)
+    # Assign classes and filter ambiguous samples
+    keep_feat, keep_class = [], []
+    filtered = 0
+    for i in range(len(features)):
+        c = label_to_class(labels[i, 0], labels[i, 1], deflection_threshold)
+        if c is None:
+            filtered += 1
+            continue
+        keep_feat.append(features[i])
+        keep_class.append(c)
 
-    counts = np.bincount(classes, minlength=5)
+    print(f"Filtered out {filtered} ambiguous transition samples")
+    features = np.array(keep_feat, dtype=np.float32)
+    classes  = np.array(keep_class, dtype=np.int64)
+
     names = ['UP', 'DOWN', 'LEFT', 'RIGHT', 'NEUTRAL']
-    print("Class distribution:")
-    for i, (n, c) in enumerate(zip(names, counts)):
+    counts = np.bincount(classes, minlength=5)
+    print("Class distribution after filtering:")
+    for n, c in zip(names, counts):
         print(f"  {n:8s}: {c}")
 
     return features, classes
@@ -162,7 +153,7 @@ def train(model, train_dl, val_dl, epochs, lr, device):
 
         if epoch % 10 == 0 or epoch == 1:
             print(f"  epoch {epoch:4d}/{epochs}  "
-                  f"train={tl:.4f}  val={vl:.4f}  val_acc={acc:.1%}  best={best_val:.4f}")
+                  f"train={tl:.4f}  val={vl:.4f}  val_acc={acc:.1%}")
 
     if best_state:
         model.load_state_dict(best_state)
@@ -174,9 +165,7 @@ def evaluate(model, features, classes, device):
     X = torch.from_numpy(features).to(device)
     with torch.no_grad():
         preds = model(X).argmax(1).cpu().numpy()
-
     names = ['UP', 'DOWN', 'LEFT', 'RIGHT', 'NEUTRAL']
-    # Only evaluate on non-neutral
     mask = classes != 4
     correct = (preds[mask] == classes[mask]).sum()
     total = mask.sum()
@@ -189,18 +178,20 @@ def evaluate(model, features, classes, device):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data',     required=True)
-    parser.add_argument('--out',      default='decoder.onnx')
-    parser.add_argument('--epochs',   type=int,   default=100)
-    parser.add_argument('--lr',       type=float, default=1e-3)
-    parser.add_argument('--batch',    type=int,   default=128)
-    parser.add_argument('--channels', type=int,   default=32)
+    parser.add_argument('--data',      required=True)
+    parser.add_argument('--out',       default='decoder.onnx')
+    parser.add_argument('--epochs',    type=int,   default=100)
+    parser.add_argument('--lr',        type=float, default=1e-3)
+    parser.add_argument('--batch',     type=int,   default=128)
+    parser.add_argument('--channels',  type=int,   default=32)
+    parser.add_argument('--threshold', type=float, default=0.7,
+                        help='Joystick deflection threshold for clean samples (default: 0.7)')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
 
-    features, classes = load_data(args.data)
+    features, classes = load_and_filter_data(args.data, args.threshold)
 
     X = torch.from_numpy(features)
     Y = torch.from_numpy(classes)
@@ -215,7 +206,6 @@ def main():
     model = train(model, train_dl, val_dl, args.epochs, args.lr, device)
     evaluate(model, features, classes, device)
 
-    # Export ONNX wrapper that outputs (x, y)
     wrapper = ONNXWrapper(model.cpu())
     wrapper.eval()
     dummy = torch.zeros(1, args.channels)
@@ -229,7 +219,6 @@ def main():
         dynamic_axes={'spike_counts': {0: 'batch'}, 'cursor_xy': {0: 'batch'}}
     )
     print(f"\nExported -> {out_path}")
-    print(f"Next: synapsectl deploy-model {out_path} --name decoder -u <device-ip>")
 
 
 if __name__ == '__main__':
