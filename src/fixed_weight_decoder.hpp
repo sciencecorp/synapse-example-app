@@ -13,17 +13,21 @@
 
 #include "api/datatype.pb.h"
 #include "api/nodes/broadband_source.pb.h"
-
-// For reset callbacks
 #include <google/protobuf/struct.pb.h>
 
 namespace app {
-// 10 hz
-constexpr auto kPublishRateSec = 1.0 / 10.0;
+
+// 30 Hz publish rate → ~33 ms round-trip to game client
+// DWELL_FRAMES=3 in bci_game.py → ~100 ms dwell time per selection
+constexpr auto kPublishRateSec = 1.0 / 30.0;
+
+// Number of true neural channels.
+// In TRAINING mode the encoder appends 2 raw label channels at the end.
+constexpr size_t kNeuralChannels = 32;
+
 class FixedWeightDecoder : public synapse::App {
  public:
   FixedWeightDecoder();
-
   virtual bool setup() override;
 
  protected:
@@ -31,98 +35,59 @@ class FixedWeightDecoder : public synapse::App {
 
  private:
   synapse::ApplicationNodeConfig application_config_;
-
-  // Use this to detect if there is frame drops
   uint64_t last_sequence_number_ = 0;
-
-  // A timer to provide a consistent publishing cadence for joystick commands
   synapse::Timer publish_rate_limiter_;
 
-  // We want to filter the incoming broadband data, so do so here
   std::atomic<bool> filters_initialized_{false};
-
   float low_cutoff_hz_ = 200.0;
   float high_cutoff_hz_ = 5000.0;
   static constexpr int kSpectralFilterOrder = 2;
   std::vector<std::unique_ptr<synapse::BaseFilter>> bandpass_filters_;
 
-  // Spike detection configuration and detectors
   std::atomic<bool> spike_detectors_initialized_{false};
-  float spike_threshold_ = 50.0;          // Threshold in microvolts
-  uint32_t waveform_size_ = 50;           // Total samples per waveform
-  uint64_t refractory_period_us_ = 1000;  // 1ms refractory period
-  float sample_rate_hz_ = 30000.0;        // Will be updated during initialization
+  float spike_threshold_ = 50.0;
+  uint32_t waveform_size_ = 50;
+  uint64_t refractory_period_us_ = 1000;
+  float sample_rate_hz_ = 32000.0;
   std::vector<std::unique_ptr<synapse::BaseSpikeDetector>> spike_detectors_;
-
-  // Collection of detected spikes
   std::vector<synapse::SpikeEvent*> detected_spikes_;
 
-  // Spike binning and cursor control parameters
-  int window_size_ = 5;              // Number of bins to use for firing rate estimation
-  float max_expected_rate_ = 10.0f;  // For normalization
-  std::deque<std::vector<uint32_t>>
-      spike_count_window_;  // Window buffer to store binned spike counts
+  int window_size_ = 5;
+  float max_expected_rate_ = 10.0f;
+  std::deque<std::vector<uint32_t>> spike_count_window_;
 
-  // We will select 4 channels randomly for cursor control
   std::mutex cursor_channel_mutex_;
   std::array<size_t, 4> cursor_channels_ = {0, 7, 16, 30};
 
-  // Should function profiling be enabled?
   bool enable_function_profiling_ = false;
-
-  // Inference: optional model for neural decoding
   bool enable_inference_ = false;
   std::string model_name_ = "decoder";
   std::unique_ptr<synapse::BaseModel> model_;
 
-  // Inference benchmarking
   uint64_t inference_count_ = 0;
   uint64_t inference_total_us_ = 0;
   uint64_t inference_min_us_ = UINT64_MAX;
   uint64_t inference_max_us_ = 0;
 
-  // Set up inference (loads model, logs runtimes)
+  // Publishes spike counts every bin for training data collection.
+  // Also publishes raw label channel values when in training mode (34 channels).
+  void publish_training_taps(const std::vector<uint32_t>& spike_counts,
+                              const synapse::BroadbandFrame& last_frame);
+
   void setup_inference();
-
-  // Run inference on spike count features and return decoded cursor position
-  // Falls back to the fixed-weight calculation if inference is not available
   std::pair<float, float> run_inference(const std::vector<uint32_t>& spike_counts);
-
-  // Waits until a set of broadband frames are read from the node
-  // Returns false if there was an error reading
   bool wait_for_frames(std::vector<synapse::BroadbandFrame>& frames, const float bin_size_ms);
-
-  // If not zero, we dropped some frames, determine what to do
   int detect_dropped_frames(const uint64_t last_sequence_number,
                             const uint64_t current_sequence_number);
-
-  // Randomly select channels to use for cursor control
   bool initialize_cursor_channels(const size_t channel_count);
-
-  // Before starting, set up our filters.
-  // We can use the first broadband frame to do this initialization
   void initialize_filters(const size_t channel_count, const float sample_rate_hz,
                           const float bin_size_ms);
-
-  // Initialize spike detectors for each channel
   void initialize_spike_detectors(const size_t channel_count);
-
-  // Clean up any allocated spike events
   void cleanup_spike_events();
-
-  // Calculate cursor position from spike counts
   std::pair<float, float> calculate_cursor_position(const std::vector<uint32_t>& spike_counts);
-
-  // Validate the configuration
   bool validate_config(const synapse::ApplicationNodeConfig& configuration);
-
-  // Parse the configuration
   bool parse_config(const synapse::ApplicationNodeConfig& configuration);
-
-  // If we get a message on our update configuration tap, handle it
-  // NOTE: if you are expecting frequent updates, you wouldn't handle the data in the callback
-  //       you would instead add the message to a queue and run a process_callback() in your main
-  //       loop
   void handle_update_request(const google::protobuf::ListValue& message);
 };
+
 }  // namespace app
