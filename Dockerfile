@@ -107,14 +107,17 @@ RUN cd "${VCPKG_ROOT}" && \
     --clean-after-build
 
 # -----------------------------------------------------------------------------
-# Install Synapse SDK from Science Corp apt repo
+# Install Synapse SDK and shared libraries from Science Corp apt repo
 # -----------------------------------------------------------------------------
 ARG SDK_VERSION=0.6.0
+ARG SHARED_LIBS_VERSION=1.3.0
 COPY keys/science-repo-public.asc /usr/share/keyrings/scifi-repo-science-public.asc
 RUN set -eux; \
     apt-get update && apt-get install -y --no-install-recommends ca-certificates; \
     echo "deb [signed-by=/usr/share/keyrings/scifi-repo-science-public.asc] https://pub-879bfa29e67b4cd6b0c78b0d4cc3aa59.r2.dev/scifi focal main" > /etc/apt/sources.list.d/repo-science.list; \
-    apt-get update && apt-get install -y synapse-app-sdk="${SDK_VERSION}"; \
+    apt-get update && apt-get install -y \
+        synapse-app-sdk="${SDK_VERSION}" \
+        scifi-headstage-shared-libraries="${SHARED_LIBS_VERSION}"; \
     rm -rf /var/lib/apt/lists/*
 
 # Copy ONNX Runtime shared library into /usr/lib/ so that:
