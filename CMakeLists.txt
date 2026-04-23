@@ -66,6 +66,8 @@ target_include_directories(synapse-example-app
         ${PROTO_OUT_DIR}
 )
 
+target_compile_options(synapse-example-app PRIVATE -Wno-psabi)
+
 # Link dependencies
 target_link_libraries(synapse-example-app
     PUBLIC
@@ -77,6 +79,10 @@ target_link_libraries(synapse-example-app
     PRIVATE
         spdlog::spdlog
 )
+
+# Resolve transitive NEEDED libs of libsynapse-app-sdk.so (e.g. libonnxruntime.so.1.16.3)
+# from scifi-headstage-shared-libraries, which installs to /opt/scifi/lib in the builder image.
+target_link_options(synapse-example-app PRIVATE -Wl,-rpath-link,/opt/scifi/lib)
 
 # Packaging configuration
 set(CPACK_PACKAGE_DIRECTORY "${CMAKE_SOURCE_DIR}/dist")

@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <cstdint>
 #include <random>
 #include <deque>
 
@@ -8,6 +9,7 @@
 #include <synapse-app-sdk/middleware/conversions.hpp>
 #include <synapse-app-sdk/dsp/filter/bandpass.hpp>
 #include <synapse-app-sdk/dsp/spike/threshold_detector.hpp>
+#include <synapse-app-sdk/inference/model.hpp>
 
 #include "api/datatype.pb.h"
 #include "api/nodes/broadband_source.pb.h"
@@ -67,6 +69,24 @@ class FixedWeightDecoder : public synapse::App {
 
   // Should function profiling be enabled?
   bool enable_function_profiling_ = false;
+
+  // Inference: optional model for neural decoding
+  bool enable_inference_ = false;
+  std::string model_name_ = "decoder";
+  std::unique_ptr<synapse::BaseModel> model_;
+
+  // Inference benchmarking
+  uint64_t inference_count_ = 0;
+  uint64_t inference_total_us_ = 0;
+  uint64_t inference_min_us_ = UINT64_MAX;
+  uint64_t inference_max_us_ = 0;
+
+  // Set up inference (loads model, logs runtimes)
+  void setup_inference();
+
+  // Run inference on spike count features and return decoded cursor position
+  // Falls back to the fixed-weight calculation if inference is not available
+  std::pair<float, float> run_inference(const std::vector<uint32_t>& spike_counts);
 
   // Waits until a set of broadband frames are read from the node
   // Returns false if there was an error reading

@@ -107,10 +107,24 @@ RUN cd "${VCPKG_ROOT}" && \
     --clean-after-build
 
 # -----------------------------------------------------------------------------
-# Install Synapse SDK from local .deb package
+# Install Synapse SDK and shared libraries from Science Corp apt repo
 # -----------------------------------------------------------------------------
-COPY synapse-app-sdk_0.5.2_arm64.deb /tmp/synapse-app-sdk.deb
-RUN dpkg -i /tmp/synapse-app-sdk.deb && rm /tmp/synapse-app-sdk.deb
+ARG SDK_VERSION=0.6.2
+ARG SHARED_LIBS_VERSION=1.3.0
+COPY keys/science-repo-public.asc /usr/share/keyrings/scifi-repo-science-public.asc
+RUN set -eux; \
+    apt-get update && apt-get install -y --no-install-recommends ca-certificates; \
+    echo "deb [signed-by=/usr/share/keyrings/scifi-repo-science-public.asc] https://pub-879bfa29e67b4cd6b0c78b0d4cc3aa59.r2.dev/scifi focal main" > /etc/apt/sources.list.d/repo-science.list; \
+    apt-get update && apt-get install -y \
+        synapse-app-sdk="${SDK_VERSION}" \
+        scifi-headstage-shared-libraries="${SHARED_LIBS_VERSION}"; \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy ONNX Runtime shared library into /usr/lib/ so that:
+#   1. The linker can resolve the SDK's transitive dependency on libonnxruntime
+#   2. synapsectl can extract it when packaging the .deb for the target device
+RUN find "${VCPKG_ROOT}/build/host/vcpkg_installed" -name "libonnxruntime*.so*" \
+    -exec cp -a {} /usr/lib/ \;
 
 # -----------------------------------------------------------------------------
 # Export environment variables used by CMake tool-chain

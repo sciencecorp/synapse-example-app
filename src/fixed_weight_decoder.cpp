@@ -53,11 +53,17 @@ bool FixedWeightDecoder::setup() {
   if (enable_function_profiling_) {
     // Enable performance monitoring
     function_profiler_manager_.add("full_loop");
+    function_profiler_manager_.add("inference");
     // Publish loop stats every 1 second
     if (!enable_function_profiling(std::chrono::seconds(1))) {
       spdlog::error("Failed to enable function profile monitoring");
       return false;
     }
+  }
+
+  // Set up inference if enabled (optional - continues even if model not available)
+  if (enable_inference_) {
+    setup_inference();
   }
 
   return true;
@@ -154,30 +160,17 @@ void FixedWeightDecoder::main() {
 
     // Only calculate cursor position if we have enough data in the window
     if (spike_count_window_.size() == window_size_) {
-      // Calculate firing rates over the window for each cursor control channel
-      std::array<float, 4> firing_rates = {0.0f, 0.0f, 0.0f, 0.0f};
-
-      for (int i = 0; i < 4; i++) {
-        size_t ch = cursor_channels_[i];
-        for (const auto& bin_counts : spike_count_window_) {
-          firing_rates[i] += bin_counts[ch];
-        }
-        firing_rates[i] /= window_size_;  // Average over window
+      if (enable_inference_ && model_ && model_->is_ready()) {
+        // Use the inference model to decode cursor position from spike counts
+        auto [x, y] = run_inference(spike_counts);
+        cursor_x = x;
+        cursor_y = y;
+      } else {
+        // Fixed-weight decoding: use differential firing rates across channel pairs
+        auto [x, y] = calculate_cursor_position(spike_counts);
+        cursor_x = x;
+        cursor_y = y;
       }
-
-      // Calculate x-position based on first channel pair (differential)
-      cursor_x = firing_rates[1] - firing_rates[0];  // Positive = right, negative = left
-
-      // Calculate y-position based on second channel pair (differential)
-      cursor_y = firing_rates[3] - firing_rates[2];  // Positive = up, negative = down
-
-      // Normalize to reasonable range (-1 to 1)
-      cursor_x = clamp(cursor_x / max_expected_rate_, -1.0f, 1.0f);
-      cursor_y = clamp(cursor_y / max_expected_rate_, -1.0f, 1.0f);
-    } else {
-      // Not enough data in window yet, use default values
-      cursor_x = 0.0f;
-      cursor_y = 0.0f;
     }
 
     // Create a tensor with the cursor position
@@ -210,6 +203,126 @@ void FixedWeightDecoder::main() {
     // You can sleep here if you want,
     // We busy wait up at the top if there is no data, so you don't need to here
   }
+}
+
+std::pair<float, float> FixedWeightDecoder::calculate_cursor_position(
+    const std::vector<uint32_t>& spike_counts) {
+  // Calculate firing rates over the window for each cursor control channel
+  std::array<float, 4> firing_rates = {0.0f, 0.0f, 0.0f, 0.0f};
+
+  for (int i = 0; i < 4; i++) {
+    size_t ch = cursor_channels_[i];
+    for (const auto& bin_counts : spike_count_window_) {
+      firing_rates[i] += bin_counts[ch];
+    }
+    firing_rates[i] /= window_size_;  // Average over window
+  }
+
+  // Differential firing rates for x and y
+  float cursor_x = firing_rates[1] - firing_rates[0];  // Positive = right, negative = left
+  float cursor_y = firing_rates[3] - firing_rates[2];  // Positive = up, negative = down
+
+  // Normalize to range [-1, 1]
+  cursor_x = clamp(cursor_x / max_expected_rate_, -1.0f, 1.0f);
+  cursor_y = clamp(cursor_y / max_expected_rate_, -1.0f, 1.0f);
+
+  return {cursor_x, cursor_y};
+}
+
+void FixedWeightDecoder::setup_inference() {
+  // Log available inference runtimes on this device
+  auto runtimes = synapse::get_available_runtimes();
+  spdlog::info("Available inference runtimes:");
+  for (const auto& rt : runtimes) {
+    const char* name = "unknown";
+    switch (rt) {
+      case synapse::InferenceRuntime::kCpu: name = "CPU (ONNX Runtime)"; break;
+      case synapse::InferenceRuntime::kGpu: name = "GPU (QNN)"; break;
+      case synapse::InferenceRuntime::kDsp: name = "DSP (QNN HTP)"; break;
+      case synapse::InferenceRuntime::kAuto: name = "Auto"; break;
+    }
+    spdlog::info("  - {}", name);
+  }
+
+  // Load the model by name from /opt/scifi/data/models/
+  // Deploy a model with: synapsectl deploy-model model.onnx --name <model_name> -u <device>
+  model_ = synapse::create_model(model_name_);
+
+  if (model_ && model_->is_ready()) {
+    spdlog::info("Inference model '{}' loaded successfully", model_name_);
+
+    auto inputs = model_->get_input_info();
+    for (const auto& input : inputs) {
+      std::string shape_str;
+      for (size_t i = 0; i < input.shape.size(); ++i) {
+        if (i > 0) shape_str += "x";
+        shape_str += std::to_string(input.shape[i]);
+      }
+      spdlog::info("  Input: {} shape=[{}] elements={}", input.name, shape_str, input.element_count);
+    }
+
+    auto outputs = model_->get_output_info();
+    for (const auto& output : outputs) {
+      std::string shape_str;
+      for (size_t i = 0; i < output.shape.size(); ++i) {
+        if (i > 0) shape_str += "x";
+        shape_str += std::to_string(output.shape[i]);
+      }
+      spdlog::info("  Output: {} shape=[{}] elements={}", output.name, shape_str,
+                    output.element_count);
+    }
+  } else {
+    spdlog::warn("Model '{}' not available - falling back to fixed-weight decoding", model_name_);
+    spdlog::warn("Deploy a model with: synapsectl deploy-model <model.onnx> --name {} -u <device>",
+                  model_name_);
+  }
+}
+
+std::pair<float, float> FixedWeightDecoder::run_inference(
+    const std::vector<uint32_t>& spike_counts) {
+  if (!model_ || !model_->is_ready()) {
+    return calculate_cursor_position(spike_counts);
+  }
+
+  auto inputs = model_->get_input_info();
+  if (inputs.empty()) {
+    return calculate_cursor_position(spike_counts);
+  }
+
+  // Convert spike counts to float input for the model
+  std::vector<float> input_features(inputs[0].element_count, 0.0f);
+  for (size_t i = 0; i < spike_counts.size() && i < input_features.size(); ++i) {
+    input_features[i] = static_cast<float>(spike_counts[i]);
+  }
+
+  start_profile("inference");
+  auto result = model_->infer({input_features});
+  stop_profile("inference");
+  print_profile("inference");
+
+  if (!result.success || result.outputs.empty()) {
+    spdlog::warn("Inference failed, falling back to fixed-weight decoding");
+    return calculate_cursor_position(spike_counts);
+  }
+
+  // Update benchmarking stats
+  inference_count_++;
+  inference_total_us_ += result.inference_time_us;
+  inference_min_us_ = std::min(inference_min_us_, result.inference_time_us);
+  inference_max_us_ = std::max(inference_max_us_, result.inference_time_us);
+
+  if (inference_count_ % 100 == 0) {
+    uint64_t avg_us = inference_total_us_ / inference_count_;
+    spdlog::info("Inference stats: count={}, avg={} us, min={} us, max={} us",
+                  inference_count_, avg_us, inference_min_us_, inference_max_us_);
+  }
+
+  // Model output: expect at least 2 values [cursor_x, cursor_y]
+  const auto& output = result.outputs[0];
+  float cursor_x = (output.size() > 0) ? clamp(output[0], -1.0f, 1.0f) : 0.0f;
+  float cursor_y = (output.size() > 1) ? clamp(output[1], -1.0f, 1.0f) : 0.0f;
+
+  return {cursor_x, cursor_y};
 }
 
 bool FixedWeightDecoder::wait_for_frames(std::vector<synapse::BroadbandFrame>& frames,
@@ -417,6 +530,14 @@ bool FixedWeightDecoder::parse_config(const synapse::ApplicationNodeConfig& conf
     window_size_ = parameters.at("window_size").number_value();
     max_expected_rate_ = parameters.at("max_expected_rate").number_value();
     enable_function_profiling_ = parameters.at("enable_function_profiling").bool_value();
+
+    // Inference parameters (optional - defaults to disabled)
+    if (parameters.contains("enable_inference")) {
+      enable_inference_ = parameters.at("enable_inference").bool_value();
+    }
+    if (parameters.contains("model_name")) {
+      model_name_ = parameters.at("model_name").string_value();
+    }
 
     const auto& cursor_channels = parameters.at("cursor_channels").list_value().values();
     if (cursor_channels.size() != 4) {
