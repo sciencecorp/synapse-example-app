@@ -109,7 +109,7 @@ RUN cd "${VCPKG_ROOT}" && \
 # -----------------------------------------------------------------------------
 # Install Synapse SDK and shared libraries from Science Corp apt repo
 # -----------------------------------------------------------------------------
-ARG SDK_VERSION=0.6.0
+ARG SDK_VERSION=0.6.2
 ARG SHARED_LIBS_VERSION=1.3.0
 COPY keys/science-repo-public.asc /usr/share/keyrings/scifi-repo-science-public.asc
 RUN set -eux; \
