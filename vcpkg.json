@@ -16,7 +16,6 @@
       "fmt",
       "protobuf",
       "spdlog",
-      "iir1",
-      "onnxruntime"
+      "iir1"
     ]
 }

@@ -21,7 +21,6 @@ find_package(cppzmq REQUIRED)
 find_package(Protobuf REQUIRED)
 find_package(spdlog REQUIRED CONFIG)
 find_package(iir REQUIRED CONFIG)
-find_package(onnxruntime REQUIRED CONFIG)
 
 if(USE_LOCAL_SDK)
     if(NOT LOCAL_SDK_PATH)
@@ -77,8 +76,11 @@ target_link_libraries(synapse-example-app
 
     PRIVATE
         spdlog::spdlog
-        onnxruntime::onnxruntime
 )
+
+# Resolve transitive NEEDED libs of libsynapse-app-sdk.so (e.g. libonnxruntime.so.1.16.3)
+# from scifi-headstage-shared-libraries, which installs to /opt/scifi/lib in the builder image.
+target_link_options(synapse-example-app PRIVATE -Wl,-rpath-link,/opt/scifi/lib)
 
 # Packaging configuration
 set(CPACK_PACKAGE_DIRECTORY "${CMAKE_SOURCE_DIR}/dist")
