@@ -66,6 +66,8 @@ target_include_directories(synapse-example-app
         ${PROTO_OUT_DIR}
 )
 
+target_compile_options(synapse-example-app PRIVATE -Wno-psabi)
+
 # Link dependencies
 target_link_libraries(synapse-example-app
     PUBLIC
