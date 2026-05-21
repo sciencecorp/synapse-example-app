@@ -52,8 +52,8 @@ bool FixedWeightDecoder::setup() {
 
   if (enable_function_profiling_) {
     // Enable performance monitoring
-    function_profiler_manager_.add("full_loop");
-    function_profiler_manager_.add("inference");
+    add_profile("full_loop");
+    add_profile("inference");
     // Publish loop stats every 1 second
     if (!enable_function_profiling(std::chrono::seconds(1))) {
       spdlog::error("Failed to enable function profile monitoring");
