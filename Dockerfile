@@ -107,17 +107,31 @@ RUN cd "${VCPKG_ROOT}" && \
     --clean-after-build
 
 # -----------------------------------------------------------------------------
-# Install Synapse SDK and shared libraries from Science Corp apt repo
+# Install Synapse SDK and shared libraries
+#
+# By default the SDK comes from the Science Corp apt repo at the pinned
+# SDK_VERSION. For local SDK development, drop a built .deb into ./sdk/
+# (e.g. ./sdk/synapse-app-sdk_0.6.3_arm64.deb) and it will be installed in
+# place of the apt package. scifi-headstage-shared-libraries always comes
+# from apt.
 # -----------------------------------------------------------------------------
-ARG SDK_VERSION=0.6.2
+ARG SDK_VERSION=0.6.3
 ARG SHARED_LIBS_VERSION=1.3.0
 COPY keys/science-repo-public.asc /usr/share/keyrings/scifi-repo-science-public.asc
-RUN set -eux; \
+RUN --mount=type=bind,source=.,target=/build-ctx,ro \
+    set -eux; \
     apt-get update && apt-get install -y --no-install-recommends ca-certificates; \
     echo "deb [signed-by=/usr/share/keyrings/scifi-repo-science-public.asc] https://pub-879bfa29e67b4cd6b0c78b0d4cc3aa59.r2.dev/scifi focal main" > /etc/apt/sources.list.d/repo-science.list; \
     apt-get update && apt-get install -y \
-        synapse-app-sdk="${SDK_VERSION}" \
         scifi-headstage-shared-libraries="${SHARED_LIBS_VERSION}"; \
+    LOCAL_DEB="$(ls /build-ctx/sdk/synapse-app-sdk_*_arm64.deb 2>/dev/null | head -n1 || true)"; \
+    if [ -n "${LOCAL_DEB}" ]; then \
+        echo "Installing synapse-app-sdk from local: ${LOCAL_DEB}"; \
+        apt-get install -y "${LOCAL_DEB}"; \
+    else \
+        echo "Installing synapse-app-sdk=${SDK_VERSION} from apt repo"; \
+        apt-get install -y synapse-app-sdk="${SDK_VERSION}"; \
+    fi; \
     rm -rf /var/lib/apt/lists/*
 
 # Copy ONNX Runtime shared library into /usr/lib/ so that:
