@@ -1,0 +1,9 @@
+# Normalize line endings: store as LF in the repo and check out as LF on
+# every platform (including Windows), so Windows clients never auto-insert
+# carriage returns (CRLF).
+* text=auto eol=lf
+
+# Keep platform-native line endings for scripts that require them.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
