@@ -18,6 +18,22 @@ Synapse Apps are standalone applications that can be deployed to a synapse devic
 
 Apps can be integrated into existing signal chains using `kApplication` node type. See the [Synapse API documentation](https://github.com/sciencecorp/synapse-api/tree/main) for more details.
 
+## Signal chain
+
+`config/simulator_32ch.json` runs a diamond: the virtual record peripheral fans out into two
+spectral filter nodes, and both feed the app.
+
+```
+                      +--> (3) kSpectralFilter kBandStop 55-65 Hz --+
+(1) kBroadbandSource -+                                             +--> (2) kApplication
+                      +--> (4) kSpectralFilter kHighPass 300 Hz ----+
+```
+
+An application node is the only node type that can have more than one incoming connection. The
+app sets up one reader per connected node with `setup_readers()` and reads each on its own
+thread, so this works the same for one input node or several - see
+[Reading from several input nodes](#reading-from-several-input-nodes).
+
 ## Prerequisites
 Before beginning, make sure you have the following installed:
  - Python3.10+
@@ -343,7 +359,37 @@ To dynamically update which channels are used for cursor control:
 python3 ${REPO_ROOT}/client/update_channels.py --device-ip <your-device-ip> --channels 0 1 2 3
 ```
 
-This will send a message to the `set_cursor_channels` tap to update the four channels used for joystick control. The channels must be in the range 0-31.
+This will send a message to the `set_cursor_channels` tap to update the four channels used for joystick control. The channels index every input node's channels concatenated, so with the two 32 channel filter nodes in `simulator_32ch.json` the valid range is 0-63: 0-31 are the band-stopped channels and 32-63 the high-passed ones.
+
+## Reading from several input nodes
+
+`setup_readers()` creates one reader per node the device configuration connects to the app,
+keyed by node id. Each reader owns its own socket, so the app gives each one a thread:
+
+```cpp
+// setup()
+const std::vector<uint32_t> node_ids = setup_readers();
+
+// one thread per input node
+for (const auto node_id : node_ids) {
+  threads.emplace_back([this, node_id]() {
+    while (node_running_) {
+      auto messages = reader(node_id)->receive_multipart();
+      // filter, spike detect, hand the bin off to the decoder
+    }
+  });
+}
+```
+
+Each thread turns its node's stream into a bin of spike counts. The main loop waits until every
+node has a bin, then concatenates them in node id order into one set of channels and decodes
+from that. With a single input node the concatenation is a no-op and the app behaves exactly as
+it did before.
+
+Combining data across nodes is the app's job, not the SDK's - sequence numbers are per node, so
+there is no cross-node ordering to rely on. Note also that a broadband source sends a batch of
+frames as one multipart message while a spectral filter sends one frame per message; either way
+every part is a `BroadbandFrame`.
 
 
 ## Development

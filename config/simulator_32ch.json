@@ -13,7 +13,7 @@
           "refractory_period_us": 1000,
           "window_size": 5,
           "max_expected_rate": 10.0,
-          "cursor_channels": [0, 7, 16, 30],
+          "cursor_channels": [0, 7, 32, 39],
           "enable_function_profiling": false,
           "enable_inference": false,
           "model_name": "decoder"
@@ -68,11 +68,40 @@
           }
         }
       }
+    },
+    {
+      "type": "kSpectralFilter",
+      "id": 3,
+      "spectralFilter": {
+        "method": "kBandStop",
+        "low_cutoff_hz": 55,
+        "high_cutoff_hz": 65
+      }
+    },
+    {
+      "type": "kSpectralFilter",
+      "id": 4,
+      "spectralFilter": {
+        "method": "kHighPass",
+        "low_cutoff_hz": 300
+      }
     }
   ],
   "connections": [
     {
       "src_node_id": 1,
+      "dst_node_id": 3
+    },
+    {
+      "src_node_id": 1,
+      "dst_node_id": 4
+    },
+    {
+      "src_node_id": 3,
+      "dst_node_id": 2
+    },
+    {
+      "src_node_id": 4,
       "dst_node_id": 2
     }
   ]

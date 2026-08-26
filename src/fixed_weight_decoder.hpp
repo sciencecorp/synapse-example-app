@@ -1,8 +1,13 @@
 #pragma once
 #include <array>
+#include <condition_variable>
 #include <cstdint>
+#include <map>
+#include <mutex>
 #include <random>
 #include <deque>
+#include <thread>
+#include <vector>
 
 #include <synapse-app-sdk/app/app.hpp>
 #include <synapse-app-sdk/utils/time/time.hpp>
@@ -30,32 +35,57 @@ class FixedWeightDecoder : public synapse::App {
   virtual void main() override;
 
  private:
+  // Everything the app needs to turn one input node's broadband stream into a bin of spike
+  // counts. Each input gets a thread that owns its InputSource, so nothing in here is shared.
+  struct InputSource {
+    uint32_t node_id = 0;
+
+    // Filled in from the first frame we read off this node
+    bool initialized = false;
+    float sample_rate_hz = 30000.0;
+    size_t channel_count = 0;
+
+    // Use this to detect if there is frame drops
+    uint64_t last_sequence_number = 0;
+
+    // One filter and one spike detector per channel on this node
+    std::vector<std::unique_ptr<synapse::BaseFilter>> bandpass_filters;
+    std::vector<std::unique_ptr<synapse::BaseSpikeDetector>> spike_detectors;
+
+    // Collection of detected spikes
+    std::vector<synapse::SpikeEvent*> detected_spikes;
+
+    // The frames making up the bin currently being read
+    std::vector<synapse::BroadbandFrame> frames;
+
+    std::thread thread;
+  };
+
   synapse::ApplicationNodeConfig application_config_;
 
-  // Use this to detect if there is frame drops
-  uint64_t last_sequence_number_ = 0;
+  // One per node connected to us, ordered by node id
+  std::vector<std::unique_ptr<InputSource>> sources_;
+
+  // The most recent bin of spike counts from each node, keyed by node id. Written by the input
+  // threads, drained by main() once every node has one
+  std::mutex ready_bins_mutex_;
+  std::condition_variable ready_bins_available_;
+  std::map<uint32_t, std::vector<uint32_t>> ready_bins_;
 
   // A timer to provide a consistent publishing cadence for joystick commands
   synapse::Timer publish_rate_limiter_;
 
-  // We want to filter the incoming broadband data, so do so here
-  std::atomic<bool> filters_initialized_{false};
-
   float low_cutoff_hz_ = 200.0;
   float high_cutoff_hz_ = 5000.0;
   static constexpr int kSpectralFilterOrder = 2;
-  std::vector<std::unique_ptr<synapse::BaseFilter>> bandpass_filters_;
 
-  // Spike detection configuration and detectors
-  std::atomic<bool> spike_detectors_initialized_{false};
+  // Spike detection configuration
   float spike_threshold_ = 50.0;          // Threshold in microvolts
   uint32_t waveform_size_ = 50;           // Total samples per waveform
   uint64_t refractory_period_us_ = 1000;  // 1ms refractory period
-  float sample_rate_hz_ = 30000.0;        // Will be updated during initialization
-  std::vector<std::unique_ptr<synapse::BaseSpikeDetector>> spike_detectors_;
 
-  // Collection of detected spikes
-  std::vector<synapse::SpikeEvent*> detected_spikes_;
+  // Channels from every node concatenated, known once every node has sent its first bin
+  std::atomic<size_t> total_channel_count_{0};
 
   // Spike binning and cursor control parameters
   int window_size_ = 5;              // Number of bins to use for firing rate estimation
@@ -88,9 +118,20 @@ class FixedWeightDecoder : public synapse::App {
   // Falls back to the fixed-weight calculation if inference is not available
   std::pair<float, float> run_inference(const std::vector<uint32_t>& spike_counts);
 
-  // Waits until a set of broadband frames are read from the node
+  // Reads, filters and spike detects one node's stream until the app stops. One of these runs
+  // per input node
+  void process_source(InputSource& source, const float bin_size_ms);
+
+  // Waits until a set of broadband frames are read from the node into source.frames
   // Returns false if there was an error reading
-  bool wait_for_frames(std::vector<synapse::BroadbandFrame>& frames, const float bin_size_ms);
+  bool wait_for_frames(InputSource& source, const float bin_size_ms);
+
+  // Filters source.frames and counts the spikes on each of that node's channels
+  std::vector<uint32_t> count_spikes(InputSource& source);
+
+  // Waits for a bin from every input node, then concatenates them in node id order so a channel
+  // keeps the same index from bin to bin. Returns false if we stopped while waiting
+  bool wait_for_bins(std::vector<uint32_t>& spike_counts);
 
   // If not zero, we dropped some frames, determine what to do
   int detect_dropped_frames(const uint64_t last_sequence_number,
@@ -99,16 +140,12 @@ class FixedWeightDecoder : public synapse::App {
   // Randomly select channels to use for cursor control
   bool initialize_cursor_channels(const size_t channel_count);
 
-  // Before starting, set up our filters.
-  // We can use the first broadband frame to do this initialization
-  void initialize_filters(const size_t channel_count, const float sample_rate_hz,
-                          const float bin_size_ms);
-
-  // Initialize spike detectors for each channel
-  void initialize_spike_detectors(const size_t channel_count);
+  // Before starting, set up one node's filters and spike detectors.
+  // We can use that node's first broadband frame to do this initialization
+  void initialize_source(InputSource& source, const float bin_size_ms);
 
   // Clean up any allocated spike events
-  void cleanup_spike_events();
+  void cleanup_spike_events(InputSource& source);
 
   // Calculate cursor position from spike counts
   std::pair<float, float> calculate_cursor_position(const std::vector<uint32_t>& spike_counts);
