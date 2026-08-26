@@ -83,3 +83,6 @@ app-sdk/
 vcpkg_installed/
 *.desc
 __pycache__/
+
+# Local SDK builds dropped in for testing, see the sdk/ note in the Dockerfile
+sdk/*.deb
