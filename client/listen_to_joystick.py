@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """listen_to_joystick.py
 
-A minimal client that connects to a Synapse device tap (default: "joystick_out"),
+A minimal client that connects to a Synapse device tap (default: "joystick_out_1"),
 reads 2-element float tensors published by the FixedWeightDecoder example, and
 prints the (x, y) values to stdout.
 """
@@ -26,8 +26,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--tap-name",
-        default="joystick_out",
-        help="Name of the tap to connect to (default: joystick_out)",
+        default="joystick_out_1",
+        help="Name of the tap to connect to. The app publishes one per input node, "
+        "joystick_out_<node_id> (default: joystick_out_1)",
     )
     return parser.parse_args()
 

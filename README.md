@@ -8,7 +8,7 @@ pip install -r ${REPO_ROOT}/client/requirements.txt
 synapsectl apps build ${REPO_ROOT}
 synapsectl -u "your-device-identifier" deploy ${REPO_ROOT}
 synapsectl -u "your-device-identifier" start ${REPO_ROOT}/config/simulator_32ch.json
-python3 ${REPO_ROOT}/client/listen_to_joystick.py --device-ip <your-device-ip>
+python3 ${REPO_ROOT}/client/listen_to_joystick.py --device-ip <your-device-ip> --tap-name joystick_out_1
 
 synapsectl -u "your-device-identifier" stop
 ```
@@ -349,7 +349,7 @@ int main(int argc, char* argv[]) {
 To listen to joystick output from the FixedWeightDecoder:
 
 ```bash
-python3 ${REPO_ROOT}/client/listen_to_joystick.py --device-ip <your-device-ip>
+python3 ${REPO_ROOT}/client/listen_to_joystick.py --device-ip <your-device-ip> --tap-name joystick_out_1
 ```
 
 ### Update Cursor Channels
@@ -359,7 +359,7 @@ To dynamically update which channels are used for cursor control:
 python3 ${REPO_ROOT}/client/update_channels.py --device-ip <your-device-ip> --channels 0 1 2 3
 ```
 
-This will send a message to the `set_cursor_channels` tap to update the four channels used for joystick control. The channels index every input node's channels concatenated, so with the two 32 channel filter nodes in `simulator_32ch.json` the valid range is 0-63: 0-31 are the band-stopped channels and 32-63 the high-passed ones.
+This will send a message to the `set_cursor_channels` tap to update the four channels used for joystick control. The channels index within a single stream and apply to every stream at once, so they must be valid on the narrowest one - with `simulator_32ch.json` that is 0-31.
 
 ## Reading from several input nodes
 
@@ -381,15 +381,31 @@ for (const auto node_id : node_ids) {
 }
 ```
 
-Each thread turns its node's stream into a bin of spike counts. The main loop waits until every
-node has a bin, then concatenates them in node id order into one set of channels and decodes
-from that. With a single input node the concatenation is a no-op and the app behaves exactly as
-it did before.
+Each thread runs that node's pipeline end to end - read, filter, spike detect, decode, publish -
+and the streams share nothing. Nothing is muxed and no stream waits on another, so one slow or
+silent probe cannot stall the rest.
+
+Because the streams are independent, each publishes on its own taps:
+
+| Tap | Contents |
+|---|---|
+| `joystick_out_<node_id>` | `synapse.Tensor`, the `[x, y]` cursor position decoded from that node |
+| `packet_loss_<node_id>` | `google.protobuf.Struct` with `frames_received`, `frames_dropped`, `loss_percent` |
+
+`set_cursor_channels` stays a single tap: cursor channels index within a stream, and one message
+re-steers all of them.
 
 Combining data across nodes is the app's job, not the SDK's - sequence numbers are per node, so
 there is no cross-node ordering to rely on. Note also that a broadband source sends a batch of
 frames as one multipart message while a spectral filter sends one frame per message; either way
 every part is a `BroadbandFrame`.
+
+### Packet loss
+
+Each stream counts gaps in its node's `sequence_number` and reports cumulative totals every 5
+seconds, both as a log line and on its `packet_loss_<node_id>` tap. This is loss between the
+node and the app. It is not the same as loss at the peripheral, which `ThreadedDepacketizer`
+counts on the device and which shows up in `synapsectl logs`.
 
 
 ## Development
