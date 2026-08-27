@@ -2,7 +2,10 @@
 #include <spdlog/spdlog.h>
 #include <thread>
 #include <chrono>
-#include <algorithm>                                   // for std::clamp
+#include <algorithm>                                   // for std::clamp, std::sort
+#include <map>
+#include <mutex>
+#include <utility>
 #include <synapse-app-sdk/middleware/conversions.hpp>  // for parse_protobuf_message
 
 namespace app {
@@ -12,7 +15,7 @@ T clamp(T value, T min, T max) {
   return (value < min) ? min : (value > max) ? max : value;
 }
 
-FixedWeightDecoder::FixedWeightDecoder() : publish_rate_limiter_(kPublishRateSec) {}
+FixedWeightDecoder::FixedWeightDecoder() {}
 
 bool FixedWeightDecoder::setup() {
   if (!get_app_config(
@@ -38,22 +41,45 @@ bool FixedWeightDecoder::setup() {
     return false;
   }
 
-  const uint32_t broadband_node_id = 1;
-  if (!setup_reader(broadband_node_id)) {
-    spdlog::warn("Failed to set up reader for controller");
-    return 1;
-  }
-
-  // Setup our output tap
-  if (!create_tap<synapse::Tensor>("joystick_out")) {
-    spdlog::warn("Failed to create tap for joystick out");
+  // One reader per node the device configuration connects to us. That is a single broadband
+  // source in the simplest chain, or several filter nodes fanning back in
+  auto source_node_ids = setup_readers();
+  if (source_node_ids.empty()) {
+    spdlog::error("No input nodes are connected to this application node");
     return false;
+  }
+  std::sort(source_node_ids.begin(), source_node_ids.end());
+  for (const auto node_id : source_node_ids) {
+    auto source = std::make_unique<InputSource>();
+    source->node_id = node_id;
+    sources_.push_back(std::move(source));
+  }
+  spdlog::info("Reading from {} input node(s)", sources_.size());
+
+  // Each stream publishes on its own taps, so a client can follow one probe without the others
+  // being muxed into it
+  for (auto& source : sources_) {
+    source->joystick_tap = "joystick_out_" + std::to_string(source->node_id);
+    source->packet_loss_tap = "packet_loss_" + std::to_string(source->node_id);
+    source->loop_profile = "full_loop_" + std::to_string(source->node_id);
+    source->inference_profile = "inference_" + std::to_string(source->node_id);
+
+    if (!create_tap<synapse::Tensor>(source->joystick_tap)) {
+      spdlog::error("Failed to create tap: {}", source->joystick_tap);
+      return false;
+    }
+    if (!create_tap<google::protobuf::Struct>(source->packet_loss_tap)) {
+      spdlog::error("Failed to create tap: {}", source->packet_loss_tap);
+      return false;
+    }
   }
 
   if (enable_function_profiling_) {
-    // Enable performance monitoring
-    add_profile("full_loop");
-    add_profile("inference");
+    // Enable performance monitoring, one label per stream
+    for (const auto& source : sources_) {
+      add_profile(source->loop_profile);
+      add_profile(source->inference_profile);
+    }
     // Publish loop stats every 1 second
     if (!enable_function_profiling(std::chrono::seconds(1))) {
       spdlog::error("Failed to enable function profile monitoring");
@@ -61,158 +87,212 @@ bool FixedWeightDecoder::setup() {
     }
   }
 
-  // Set up inference if enabled (optional - continues even if model not available)
+  // Set up inference if enabled (optional - continues even if model not available).
+  // Each stream loads its own model, three threads must not share one
   if (enable_inference_) {
-    setup_inference();
+    log_inference_runtimes();
+    for (auto& source : sources_) {
+      setup_inference(*source);
+    }
   }
 
   return true;
 }
 
 void FixedWeightDecoder::main() {
-  // Store our broadband frames here
   const float bin_size_ms = 10;
-  std::vector<synapse::BroadbandFrame> broadband_frames;
 
+  // Every input node runs its own pipeline end to end on its own thread. Nothing is muxed and
+  // no stream waits on another, so one slow or silent probe cannot stall the rest
+  for (auto& source : sources_) {
+    InputSource* source_ptr = source.get();
+    source->thread =
+        std::thread([this, source_ptr, bin_size_ms]() { process_source(*source_ptr, bin_size_ms); });
+  }
+
+  // The streams do the work, main just waits for the app to be stopped
   while (node_running_) {
-    // Receive data from the node you configured
-    if (!wait_for_frames(broadband_frames, bin_size_ms)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+
+  for (auto& source : sources_) {
+    if (source->thread.joinable()) {
+      source->thread.join();
+    }
+  }
+}
+
+void FixedWeightDecoder::process_source(InputSource& source, const float bin_size_ms) {
+  while (node_running_) {
+    // Receive a bin worth of data from this node
+    if (!wait_for_frames(source, bin_size_ms)) {
       // No frames just go wait again
       continue;
     }
 
-    // Keep track of how long processing takes
-    start_profile("full_loop");
+    // Initialize the filters and this node's state on its first full set of frames
+    if (!source.initialized) {
+      initialize_source(source, bin_size_ms);
 
-    // You have a set of broadband frames now, you can do whatever you want
-    // 1. Initialize the filters and our state on the first full set of frames
-    const auto broadband_frame = broadband_frames.at(0);
-    if (!filters_initialized_) {
-      const size_t channel_count = broadband_frame.frame_data_size();
-      const float sample_rate_hz = broadband_frame.sample_rate_hz();
-
-      // Store the sample rate for later use
-      sample_rate_hz_ = sample_rate_hz;
-
-      initialize_filters(channel_count, sample_rate_hz, bin_size_ms);
-      initialize_spike_detectors(channel_count);
-
-      // Move to the next loop after init
+      // Move to the next bin after init
       continue;
     }
 
+    // Keep track of how long processing takes. Every stream reports into the same label, so
+    // the profile covers a bin of work whichever stream produced it
+    start_profile(source.loop_profile);
+
     // Cleanup any previously detected spikes before processing new frames
-    cleanup_spike_events();
+    cleanup_spike_events(source);
 
-    // 2. Filter the received frames
-    // We have a mapping of channel to filtered data with size of the frames we got
-    // TODO/NOTE: you could drop out early based on timestamps
-    std::vector<std::vector<float>> filtered_channel_data;
-    filtered_channel_data.resize(broadband_frames.at(0).frame_data_size());
-    for (auto& channel_vector : filtered_channel_data) {
-      channel_vector.reserve(broadband_frames.size());
-    }
+    decode_and_publish(source, count_spikes(source));
+    publish_packet_loss(source);
 
-    // Create a vector to count spikes per channel in this batch
-    std::vector<uint32_t> spike_counts(broadband_frames.at(0).frame_data_size(), 0);
-
-    for (const auto& frame : broadband_frames) {
-      const auto& frame_data = frame.frame_data();
-      const uint64_t frame_timestamp_ns = frame.timestamp_ns();
-
-      for (int channel_id = 0; channel_id < frame_data.size(); ++channel_id) {
-        // TODO: bounds checking - but we might not even want this way of doing things
-        auto& channel_filter = bandpass_filters_.at(channel_id);
-        const float filtered_data = channel_filter->filter(frame_data[channel_id]);
-        filtered_channel_data.at(channel_id).push_back(filtered_data);
-
-        // 3. Detect spikes on the filtered data
-        if (spike_detectors_initialized_) {
-          auto& spike_detector = spike_detectors_.at(channel_id);
-
-          // Pass the filtered data to the spike detector along with the frame timestamp
-          // The detector handles the rest internally
-          synapse::SpikeEvent* spike_event =
-              spike_detector->detect(filtered_data, frame_timestamp_ns, channel_id);
-
-          if (spike_event != nullptr) {
-            // Store the detected spike for further processing
-            detected_spikes_.push_back(spike_event);
-
-            // Increment the spike count for this channel
-            spike_counts[channel_id]++;
-          }
-        }
-      }
-    }
-
-    // Add current binned spike counts to the window
-    spike_count_window_.push_back(spike_counts);
-
-    // Keep window at fixed size
-    if (spike_count_window_.size() > window_size_) {
-      spike_count_window_.pop_front();
-    }
-
-    // Calculate cursor position based on the binned spike counts
-    float cursor_x = 0.0f;
-    float cursor_y = 0.0f;
-
-    // Only calculate cursor position if we have enough data in the window
-    if (spike_count_window_.size() == window_size_) {
-      if (enable_inference_ && model_ && model_->is_ready()) {
-        // Use the inference model to decode cursor position from spike counts
-        auto [x, y] = run_inference(spike_counts);
-        cursor_x = x;
-        cursor_y = y;
-      } else {
-        // Fixed-weight decoding: use differential firing rates across channel pairs
-        auto [x, y] = calculate_cursor_position(spike_counts);
-        cursor_x = x;
-        cursor_y = y;
-      }
-    }
-
-    // Create a tensor with the cursor position
-    synapse::Tensor output_tensor;
-    const auto tensor_shape = {2};
-    output_tensor.mutable_shape()->Add(tensor_shape.begin(), tensor_shape.end());
-    output_tensor.set_dtype(synapse::Tensor_DType_DT_FLOAT);
-    output_tensor.set_endianness(synapse::Tensor_Endianness_TENSOR_LITTLE_ENDIAN);
-
-    // Use the calculated cursor position instead of raw data values
-    output_tensor.set_data(synapse::pack_tensor_data({cursor_x, cursor_y}));
-
-    const auto current_time_ns = synapse::get_steady_clock_now();
-    output_tensor.set_timestamp_ns(current_time_ns.count());
-
-    // Then, send off your data using the publisher you configured earlier
-    // In this demo, we use a ZMQ publisher over tcp
-    if (publish_rate_limiter_.reset_if_elapsed()) {
-      if (publish_tap("joystick_out", output_tensor)) {
-        spdlog::info("Published tensor: [x,y]: [{},{}]", cursor_x, cursor_y);
-      } else {
-        spdlog::warn("Failed to publish tensor data");
-      }
-      stop_profile("full_loop");
-
-      // We can also get a debug print of the output
-      print_profile("full_loop");
-    }
-
-    // You can sleep here if you want,
-    // We busy wait up at the top if there is no data, so you don't need to here
+    stop_profile(source.loop_profile);
   }
 }
 
+void FixedWeightDecoder::decode_and_publish(InputSource& source,
+                                            const std::vector<uint32_t>& spike_counts) {
+  // Add current binned spike counts to this stream's window
+  source.spike_count_window.push_back(spike_counts);
+
+  // Keep window at fixed size
+  if (source.spike_count_window.size() > static_cast<size_t>(window_size_)) {
+    source.spike_count_window.pop_front();
+  }
+
+  // Calculate cursor position based on the binned spike counts
+  float cursor_x = 0.0f;
+  float cursor_y = 0.0f;
+
+  // Only calculate cursor position if we have enough data in the window
+  if (source.spike_count_window.size() == static_cast<size_t>(window_size_)) {
+    if (enable_inference_ && source.model && source.model->is_ready()) {
+      // Use the inference model to decode cursor position from spike counts
+      auto [x, y] = run_inference(source, spike_counts);
+      cursor_x = x;
+      cursor_y = y;
+    } else {
+      // Fixed-weight decoding: use differential firing rates across channel pairs
+      auto [x, y] = calculate_cursor_position(source, spike_counts);
+      cursor_x = x;
+      cursor_y = y;
+    }
+  }
+
+  // Create a tensor with the cursor position
+  synapse::Tensor output_tensor;
+  const auto tensor_shape = {2};
+  output_tensor.mutable_shape()->Add(tensor_shape.begin(), tensor_shape.end());
+  output_tensor.set_dtype(synapse::Tensor_DType_DT_FLOAT);
+  output_tensor.set_endianness(synapse::Tensor_Endianness_TENSOR_LITTLE_ENDIAN);
+
+  // Use the calculated cursor position instead of raw data values
+  output_tensor.set_data(synapse::pack_tensor_data({cursor_x, cursor_y}));
+
+  const auto current_time_ns = synapse::get_steady_clock_now();
+  output_tensor.set_timestamp_ns(current_time_ns.count());
+
+  // Then, send off your data on this stream's own tap
+  if (source.publish_rate_limiter.reset_if_elapsed()) {
+    if (publish_tap(source.joystick_tap, output_tensor)) {
+      spdlog::info("{}: [x,y]: [{},{}]", source.joystick_tap, cursor_x, cursor_y);
+    } else {
+      spdlog::warn("Failed to publish tensor data on {}", source.joystick_tap);
+    }
+
+    // We can also get a debug print of the output
+    print_profile(source.loop_profile);
+  }
+}
+
+void FixedWeightDecoder::publish_packet_loss(InputSource& source) {
+  if (!source.loss_report_limiter.reset_if_elapsed()) {
+    return;
+  }
+
+  const double loss_percent =
+      source.frames_received == 0
+          ? 0.0
+          : (100.0 * static_cast<double>(source.frames_dropped) /
+             static_cast<double>(source.frames_received + source.frames_dropped));
+
+  if (source.frames_dropped == 0) {
+    spdlog::info("node {}: no loss, {} frames received", source.node_id, source.frames_received);
+  } else {
+    spdlog::warn("node {}: dropped {} of {} expected frames ({:.4f}%)", source.node_id,
+                 source.frames_dropped, source.frames_received + source.frames_dropped,
+                 loss_percent);
+  }
+
+  google::protobuf::Struct stats;
+  auto& fields = *stats.mutable_fields();
+  fields["node_id"].set_number_value(source.node_id);
+  fields["frames_received"].set_number_value(static_cast<double>(source.frames_received));
+  fields["frames_dropped"].set_number_value(static_cast<double>(source.frames_dropped));
+  fields["loss_percent"].set_number_value(loss_percent);
+  fields["timestamp_ns"].set_number_value(
+      static_cast<double>(synapse::get_steady_clock_now().count()));
+
+  if (!publish_tap(source.packet_loss_tap, stats)) {
+    spdlog::warn("Failed to publish packet loss on {}", source.packet_loss_tap);
+  }
+}
+
+std::vector<uint32_t> FixedWeightDecoder::count_spikes(InputSource& source) {
+  // Count spikes per channel on this node for this bin
+  std::vector<uint32_t> spike_counts(source.channel_count, 0);
+  const auto channel_count = static_cast<int>(source.channel_count);
+
+  for (const auto& frame : source.frames) {
+    const auto& frame_data = frame.frame_data();
+    const uint64_t frame_timestamp_ns = frame.timestamp_ns();
+
+    for (int channel_id = 0; channel_id < frame_data.size() && channel_id < channel_count;
+         ++channel_id) {
+      // Filter the sample
+      auto& channel_filter = source.bandpass_filters.at(channel_id);
+      const float filtered_data = channel_filter->filter(frame_data[channel_id]);
+
+      // Detect spikes on the filtered data. Pass the filtered data to the spike detector along
+      // with the frame timestamp, the detector handles the rest internally
+      auto& spike_detector = source.spike_detectors.at(channel_id);
+      synapse::SpikeEvent* spike_event =
+          spike_detector->detect(filtered_data, frame_timestamp_ns, channel_id);
+
+      if (spike_event != nullptr) {
+        // Store the detected spike for further processing
+        source.detected_spikes.push_back(spike_event);
+
+        // Increment the spike count for this channel
+        spike_counts[channel_id]++;
+      }
+    }
+  }
+
+  return spike_counts;
+}
+
 std::pair<float, float> FixedWeightDecoder::calculate_cursor_position(
-    const std::vector<uint32_t>& spike_counts) {
+    InputSource& source, const std::vector<uint32_t>& spike_counts) {
   // Calculate firing rates over the window for each cursor control channel
   std::array<float, 4> firing_rates = {0.0f, 0.0f, 0.0f, 0.0f};
 
+  std::array<size_t, 4> channels;
+  {
+    // The control tap can re-steer the channels from another thread at any point
+    std::lock_guard<std::mutex> lock(cursor_channel_mutex_);
+    channels = cursor_channels_;
+  }
+
   for (int i = 0; i < 4; i++) {
-    size_t ch = cursor_channels_[i];
-    for (const auto& bin_counts : spike_count_window_) {
+    size_t ch = channels[i];
+    for (const auto& bin_counts : source.spike_count_window) {
+      // Cursor channels index within one stream, so a config can name one past the end
+      if (ch >= bin_counts.size()) {
+        continue;
+      }
       firing_rates[i] += bin_counts[ch];
     }
     firing_rates[i] /= window_size_;  // Average over window
@@ -229,7 +309,7 @@ std::pair<float, float> FixedWeightDecoder::calculate_cursor_position(
   return {cursor_x, cursor_y};
 }
 
-void FixedWeightDecoder::setup_inference() {
+void FixedWeightDecoder::log_inference_runtimes() {
   // Log available inference runtimes on this device
   auto runtimes = synapse::get_available_runtimes();
   spdlog::info("Available inference runtimes:");
@@ -244,14 +324,18 @@ void FixedWeightDecoder::setup_inference() {
     spdlog::info("  - {}", name);
   }
 
+}
+
+void FixedWeightDecoder::setup_inference(InputSource& source) {
   // Load the model by name from /opt/scifi/data/models/
   // Deploy a model with: synapsectl deploy-model model.onnx --name <model_name> -u <device>
-  model_ = synapse::create_model(model_name_);
+  // Every stream gets its own instance, BaseModel is not shared across threads
+  source.model = synapse::create_model(model_name_);
 
-  if (model_ && model_->is_ready()) {
-    spdlog::info("Inference model '{}' loaded successfully", model_name_);
+  if (source.model && source.model->is_ready()) {
+    spdlog::info("Node {}: inference model '{}' loaded successfully", source.node_id, model_name_);
 
-    auto inputs = model_->get_input_info();
+    auto inputs = source.model->get_input_info();
     for (const auto& input : inputs) {
       std::string shape_str;
       for (size_t i = 0; i < input.shape.size(); ++i) {
@@ -261,7 +345,7 @@ void FixedWeightDecoder::setup_inference() {
       spdlog::info("  Input: {} shape=[{}] elements={}", input.name, shape_str, input.element_count);
     }
 
-    auto outputs = model_->get_output_info();
+    auto outputs = source.model->get_output_info();
     for (const auto& output : outputs) {
       std::string shape_str;
       for (size_t i = 0; i < output.shape.size(); ++i) {
@@ -272,21 +356,22 @@ void FixedWeightDecoder::setup_inference() {
                     output.element_count);
     }
   } else {
-    spdlog::warn("Model '{}' not available - falling back to fixed-weight decoding", model_name_);
+    spdlog::warn("Node {}: model '{}' not available - falling back to fixed-weight decoding",
+                 source.node_id, model_name_);
     spdlog::warn("Deploy a model with: synapsectl deploy-model <model.onnx> --name {} -u <device>",
                   model_name_);
   }
 }
 
 std::pair<float, float> FixedWeightDecoder::run_inference(
-    const std::vector<uint32_t>& spike_counts) {
-  if (!model_ || !model_->is_ready()) {
-    return calculate_cursor_position(spike_counts);
+    InputSource& source, const std::vector<uint32_t>& spike_counts) {
+  if (!source.model || !source.model->is_ready()) {
+    return calculate_cursor_position(source, spike_counts);
   }
 
-  auto inputs = model_->get_input_info();
+  auto inputs = source.model->get_input_info();
   if (inputs.empty()) {
-    return calculate_cursor_position(spike_counts);
+    return calculate_cursor_position(source, spike_counts);
   }
 
   // Convert spike counts to float input for the model
@@ -295,26 +380,28 @@ std::pair<float, float> FixedWeightDecoder::run_inference(
     input_features[i] = static_cast<float>(spike_counts[i]);
   }
 
-  start_profile("inference");
-  auto result = model_->infer({input_features});
-  stop_profile("inference");
-  print_profile("inference");
+  start_profile(source.inference_profile);
+  auto result = source.model->infer({input_features});
+  stop_profile(source.inference_profile);
+  print_profile(source.inference_profile);
 
   if (!result.success || result.outputs.empty()) {
-    spdlog::warn("Inference failed, falling back to fixed-weight decoding");
-    return calculate_cursor_position(spike_counts);
+    spdlog::warn("Node {}: inference failed, falling back to fixed-weight decoding",
+                 source.node_id);
+    return calculate_cursor_position(source, spike_counts);
   }
 
   // Update benchmarking stats
-  inference_count_++;
-  inference_total_us_ += result.inference_time_us;
-  inference_min_us_ = std::min(inference_min_us_, result.inference_time_us);
-  inference_max_us_ = std::max(inference_max_us_, result.inference_time_us);
+  source.inference_count++;
+  source.inference_total_us += result.inference_time_us;
+  source.inference_min_us = std::min(source.inference_min_us, result.inference_time_us);
+  source.inference_max_us = std::max(source.inference_max_us, result.inference_time_us);
 
-  if (inference_count_ % 100 == 0) {
-    uint64_t avg_us = inference_total_us_ / inference_count_;
-    spdlog::info("Inference stats: count={}, avg={} us, min={} us, max={} us",
-                  inference_count_, avg_us, inference_min_us_, inference_max_us_);
+  if (source.inference_count % 100 == 0) {
+    uint64_t avg_us = source.inference_total_us / source.inference_count;
+    spdlog::info("Node {} inference stats: count={}, avg={} us, min={} us, max={} us",
+                 source.node_id, source.inference_count, avg_us, source.inference_min_us,
+                 source.inference_max_us);
   }
 
   // Model output: expect at least 2 values [cursor_x, cursor_y]
@@ -325,25 +412,30 @@ std::pair<float, float> FixedWeightDecoder::run_inference(
   return {cursor_x, cursor_y};
 }
 
-bool FixedWeightDecoder::wait_for_frames(std::vector<synapse::BroadbandFrame>& frames,
-                                         float bin_size_ms) {
+bool FixedWeightDecoder::wait_for_frames(InputSource& source, const float bin_size_ms) {
   if (bin_size_ms <= 0) {
     spdlog::warn("invalid bin size of: {}", bin_size_ms);
     return false;
   }
 
+  auto* node_reader = reader(source.node_id);
+  if (node_reader == nullptr) {
+    spdlog::error("No reader set up for node: {}", source.node_id);
+    return false;
+  }
+
   const float bin_size_sec = bin_size_ms / 1000;
-  const size_t target_num_of_frames = bin_size_sec * (sample_rate_hz_);
+  const size_t target_num_of_frames = bin_size_sec * source.sample_rate_hz;
 
   // Prepare our output vector
-  frames.clear();
+  source.frames.clear();
 
   // TODO: We should consider having a timeout here
   while (node_running_) {
-    // In this example, we are listening to BroadbandFrame data
-    // TODO: the broadband node sends over the messages using multipart
-    // Figure out why this is the case
-    auto messages = data_reader_->receive_multipart();
+    // In this example, we are listening to BroadbandFrame data. A broadband source node sends a
+    // batch of frames as one multipart message, a spectral filter node sends one frame per
+    // message. Either way, every part is a BroadbandFrame
+    auto messages = node_reader->receive_multipart();
     if (messages.empty()) {
       // Just keep trying
       // TODO: We should have better signaling on the read failure
@@ -352,7 +444,7 @@ bool FixedWeightDecoder::wait_for_frames(std::vector<synapse::BroadbandFrame>& f
     }
 
     // Reserve space for these frames
-    frames.reserve(frames.size() + messages.size());
+    source.frames.reserve(source.frames.size() + messages.size());
 
     // Process each received message in this multipart
     for (auto& message : messages) {
@@ -360,9 +452,9 @@ bool FixedWeightDecoder::wait_for_frames(std::vector<synapse::BroadbandFrame>& f
       const auto maybe_frame =
           synapse::parse_protobuf_message<synapse::BroadbandFrame>(std::move(message));
       if (!maybe_frame.has_value()) {
-        spdlog::warn("Failed to parse broadband frame");
+        spdlog::warn("Failed to parse broadband frame from node {}", source.node_id);
         // If we have no frames at all, return false
-        if (frames.empty()) {
+        if (source.frames.empty()) {
           return false;
         }
         // Otherwise, return what we have so far
@@ -371,21 +463,26 @@ bool FixedWeightDecoder::wait_for_frames(std::vector<synapse::BroadbandFrame>& f
 
       const auto& broadband_frame = maybe_frame.value();
 
-      // Check for dropped frames
-      const auto dropped_frames =
-          detect_dropped_frames(last_sequence_number_, broadband_frame.sequence_number());
-      if (dropped_frames != 0) {
-        spdlog::warn("Dropped: {} frames", dropped_frames);
+      // Track packet loss from gaps in the sequence numbers. The first frame we ever see only
+      // seeds the counter, there is no earlier frame to compare it against
+      source.frames_received++;
+      if (source.have_sequence_number) {
+        const auto dropped_frames =
+            detect_dropped_frames(source.last_sequence_number, broadband_frame.sequence_number());
+        if (dropped_frames > 0) {
+          source.frames_dropped += static_cast<uint64_t>(dropped_frames);
+        }
       }
-      last_sequence_number_ = broadband_frame.sequence_number();
+      source.have_sequence_number = true;
+      source.last_sequence_number = broadband_frame.sequence_number();
 
       // Add the frame to our collection
-      frames.push_back(broadband_frame);
+      source.frames.push_back(broadband_frame);
     }
 
     // TODO: Instead, we could process the entire multipart?
     // After processing this multipart, check if we've reached the bin size
-    if (frames.size() >= target_num_of_frames) {
+    if (source.frames.size() >= target_num_of_frames) {
       return true;
     }
   }
@@ -398,63 +495,71 @@ int FixedWeightDecoder::detect_dropped_frames(const uint64_t last_sequence_numbe
   return (current_sequence_number - expected_sequence_number);
 }
 
-void FixedWeightDecoder::initialize_spike_detectors(const size_t channel_count) {
-  // Create spike detectors for each channel
-  spike_detectors_.clear();
-  spike_detectors_.reserve(channel_count);
+void FixedWeightDecoder::initialize_source(InputSource& source, const float bin_size_ms) {
+  // Whatever this node sends us in its first frame is the shape of its stream
+  const auto& first_frame = source.frames.at(0);
+  source.channel_count = first_frame.frame_data_size();
+  source.sample_rate_hz = first_frame.sample_rate_hz();
 
-  for (size_t channel_index = 0; channel_index < channel_count; ++channel_index) {
-    auto detector_ptr = synapse::create_threshold_detector(spike_threshold_, waveform_size_,
-                                                           refractory_period_us_, sample_rate_hz_);
+  spdlog::info("Node {} initializing\tsample_rate={} Hz\tchannels={}\tbin_size={} ms",
+               source.node_id, source.sample_rate_hz, source.channel_count, bin_size_ms);
 
-    if (detector_ptr == nullptr) {
-      spdlog::error("Failed to create spike detector for channel: {}", channel_index);
+  // Create a filter and a spike detector for each of this node's channels
+  source.bandpass_filters.clear();
+  source.bandpass_filters.reserve(source.channel_count);
+  source.spike_detectors.clear();
+  source.spike_detectors.reserve(source.channel_count);
+
+  for (size_t channel_index = 0; channel_index < source.channel_count; ++channel_index) {
+    auto filter_ptr = synapse::create_bandpass_filter<kSpectralFilterOrder>(
+        source.sample_rate_hz, low_cutoff_hz_, high_cutoff_hz_);
+    if (filter_ptr == nullptr) {
+      spdlog::error("Failed to create filter for node {} channel: {}", source.node_id,
+                    channel_index);
     }
-    spike_detectors_.push_back(std::move(detector_ptr));
+    source.bandpass_filters.push_back(std::move(filter_ptr));
+
+    auto detector_ptr = synapse::create_threshold_detector(
+        spike_threshold_, waveform_size_, refractory_period_us_, source.sample_rate_hz);
+    if (detector_ptr == nullptr) {
+      spdlog::error("Failed to create spike detector for node {} channel: {}", source.node_id,
+                    channel_index);
+    }
+    source.spike_detectors.push_back(std::move(detector_ptr));
   }
 
-  spdlog::info("Initialized spike detectors with threshold: {} μV, sample rate: {} Hz",
-               spike_threshold_, sample_rate_hz_);
-  spike_detectors_initialized_ = true;
+  spdlog::info("Node {} initialized {} filters and spike detectors with threshold: {} uV",
+               source.node_id, source.channel_count, spike_threshold_);
+  source.initialized = true;
+
+  // A cursor channel has to be valid on every stream, so track the smallest channel count
+  size_t current = min_channel_count_.load();
+  while ((current == 0 || source.channel_count < current) &&
+         !min_channel_count_.compare_exchange_weak(current, source.channel_count)) {
+  }
+
+  initialize_cursor_channels(min_channel_count_.load());
 }
 
-void FixedWeightDecoder::cleanup_spike_events() {
+void FixedWeightDecoder::cleanup_spike_events(InputSource& source) {
   // Free memory for all detected spike events
-  for (auto spike_event : detected_spikes_) {
+  for (auto spike_event : source.detected_spikes) {
     delete spike_event;
   }
-  detected_spikes_.clear();
-}
-
-void FixedWeightDecoder::initialize_filters(const size_t channel_count, const float sample_rate_hz,
-                                            const float bin_size_ms) {
-  if (!initialize_cursor_channels(channel_count)) {
-    return;
-  }
-
-  // We have four channels selected, initialize our filters
-  spdlog::info("Initializing\tsample_rate={} Hz\tchannels={}\tbin_size={} ms", sample_rate_hz,
-               channel_count, bin_size_ms);
-
-  // Create filters for each channel
-  bandpass_filters_.clear();
-  bandpass_filters_.reserve(channel_count);
-  for (size_t channel_index = 0; channel_index < channel_count; ++channel_index) {
-    auto filter_ptr = synapse::create_bandpass_filter<kSpectralFilterOrder>(
-        sample_rate_hz, low_cutoff_hz_, high_cutoff_hz_);
-    if (filter_ptr == nullptr) {
-      spdlog::error("Failed to create filter for channel: {}", channel_index);
-    }
-    bandpass_filters_.push_back(std::move(filter_ptr));
-  }
-  spdlog::info("Initialized filters");
-  filters_initialized_ = true;
+  source.detected_spikes.clear();
 }
 
 bool FixedWeightDecoder::initialize_cursor_channels(const size_t channel_count) {
   if (channel_count < 4) {
     spdlog::warn("Need at least four channels for joystick control");
     return false;
+  }
+
+  for (const auto& channel : cursor_channels_) {
+    if (channel >= channel_count) {
+      spdlog::warn("Cursor channel {} is past the {} channels we are reading", channel,
+                   channel_count);
+    }
   }
 
   std::stringstream ss;
@@ -569,6 +674,14 @@ void FixedWeightDecoder::handle_update_request(const google::protobuf::ListValue
       return;
     }
 
+    // Cursor channels index within a stream and apply to all of them, so they have to be valid
+    // on the narrowest one. We only know that once each node has sent us a bin
+    const size_t channel_count = min_channel_count_;
+    if (channel_count == 0) {
+      spdlog::warn("Got an update request before any data arrived, ignoring it");
+      return;
+    }
+
     // Make sure they are in a good range
     for (const auto& value : values) {
       if (!value.has_number_value()) {
@@ -577,7 +690,7 @@ void FixedWeightDecoder::handle_update_request(const google::protobuf::ListValue
       }
 
       const auto channel = value.number_value();
-      if (channel < 0 || channel >= 32) {
+      if (channel < 0 || channel >= static_cast<double>(channel_count)) {
         spdlog::warn("Got an out of range joystick channel: {}", channel);
         return;
       }
@@ -590,7 +703,7 @@ void FixedWeightDecoder::handle_update_request(const google::protobuf::ListValue
         cursor_channels_[i] = values[i].number_value();
       }
     }
-    initialize_cursor_channels(cursor_channels_.size());
+    initialize_cursor_channels(min_channel_count_);
   } catch (const std::exception& e) {
     spdlog::error("Got a reset request, but had trouble parsing. Why: {}", e.what());
   }

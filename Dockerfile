@@ -115,7 +115,7 @@ RUN cd "${VCPKG_ROOT}" && \
 # place of the apt package. scifi-headstage-shared-libraries always comes
 # from apt.
 # -----------------------------------------------------------------------------
-ARG SDK_VERSION=0.6.3
+ARG SDK_VERSION=0.6.4
 ARG SHARED_LIBS_VERSION=1.3.0
 COPY keys/science-repo-public.asc /usr/share/keyrings/scifi-repo-science-public.asc
 RUN --mount=type=bind,source=.,target=/build-ctx,ro \
