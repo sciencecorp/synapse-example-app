@@ -352,9 +352,6 @@ case. The app is not limited to that: `setup_readers()` creates one reader per n
 configuration connects to it, keyed by node id, and each reader owns its own socket so the app
 gives each one a thread. `config/three_broadband_sources.json` runs three probes this way.
 
-Note that a configuration with several nodes feeding one application node needs a device build
-that allows it - see sciencecorp/headstage#544.
-
 ```cpp
 // setup()
 const std::vector<uint32_t> node_ids = setup_readers();
@@ -393,8 +390,7 @@ every part is a `BroadbandFrame`.
 
 Each stream counts gaps in its node's `sequence_number` and reports cumulative totals every 5
 seconds, both as a log line and on its `packet_loss_<node_id>` tap. This is loss between the
-node and the app. It is not the same as loss at the peripheral, which `ThreadedDepacketizer`
-counts on the device and which shows up in `synapsectl logs`.
+node and the app.
 
 
 ## Development
