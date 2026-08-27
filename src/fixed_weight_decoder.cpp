@@ -15,7 +15,7 @@ T clamp(T value, T min, T max) {
   return (value < min) ? min : (value > max) ? max : value;
 }
 
-FixedWeightDecoder::FixedWeightDecoder() : publish_rate_limiter_(kPublishRateSec) {}
+FixedWeightDecoder::FixedWeightDecoder() {}
 
 bool FixedWeightDecoder::setup() {
   if (!get_app_config(
@@ -56,16 +56,30 @@ bool FixedWeightDecoder::setup() {
   }
   spdlog::info("Reading from {} input node(s)", sources_.size());
 
-  // Setup our output tap
-  if (!create_tap<synapse::Tensor>("joystick_out")) {
-    spdlog::warn("Failed to create tap for joystick out");
-    return false;
+  // Each stream publishes on its own taps, so a client can follow one probe without the others
+  // being muxed into it
+  for (auto& source : sources_) {
+    source->joystick_tap = "joystick_out_" + std::to_string(source->node_id);
+    source->packet_loss_tap = "packet_loss_" + std::to_string(source->node_id);
+    source->loop_profile = "full_loop_" + std::to_string(source->node_id);
+    source->inference_profile = "inference_" + std::to_string(source->node_id);
+
+    if (!create_tap<synapse::Tensor>(source->joystick_tap)) {
+      spdlog::error("Failed to create tap: {}", source->joystick_tap);
+      return false;
+    }
+    if (!create_tap<google::protobuf::Struct>(source->packet_loss_tap)) {
+      spdlog::error("Failed to create tap: {}", source->packet_loss_tap);
+      return false;
+    }
   }
 
   if (enable_function_profiling_) {
-    // Enable performance monitoring
-    add_profile("full_loop");
-    add_profile("inference");
+    // Enable performance monitoring, one label per stream
+    for (const auto& source : sources_) {
+      add_profile(source->loop_profile);
+      add_profile(source->inference_profile);
+    }
     // Publish loop stats every 1 second
     if (!enable_function_profiling(std::chrono::seconds(1))) {
       spdlog::error("Failed to enable function profile monitoring");
@@ -73,9 +87,13 @@ bool FixedWeightDecoder::setup() {
     }
   }
 
-  // Set up inference if enabled (optional - continues even if model not available)
+  // Set up inference if enabled (optional - continues even if model not available).
+  // Each stream loads its own model, three threads must not share one
   if (enable_inference_) {
-    setup_inference();
+    log_inference_runtimes();
+    for (auto& source : sources_) {
+      setup_inference(*source);
+    }
   }
 
   return true;
@@ -84,85 +102,17 @@ bool FixedWeightDecoder::setup() {
 void FixedWeightDecoder::main() {
   const float bin_size_ms = 10;
 
-  // Each input node gets a thread that reads, filters and spike detects its own stream. With a
-  // single input node that is the same pipeline as always, just off the main thread
+  // Every input node runs its own pipeline end to end on its own thread. Nothing is muxed and
+  // no stream waits on another, so one slow or silent probe cannot stall the rest
   for (auto& source : sources_) {
     InputSource* source_ptr = source.get();
     source->thread =
         std::thread([this, source_ptr, bin_size_ms]() { process_source(*source_ptr, bin_size_ms); });
   }
 
-  // Spike counts for every input node's channels, concatenated
-  std::vector<uint32_t> spike_counts;
-
+  // The streams do the work, main just waits for the app to be stopped
   while (node_running_) {
-    // Wait until every input node has a bin ready, so each decode covers the same slice of time
-    if (!wait_for_bins(spike_counts)) {
-      continue;
-    }
-
-    // Keep track of how long processing takes
-    start_profile("full_loop");
-
-    // The combined channel count is only known once every node has sent a bin
-    if (total_channel_count_ != spike_counts.size()) {
-      total_channel_count_ = spike_counts.size();
-      initialize_cursor_channels(spike_counts.size());
-    }
-
-    // Add current binned spike counts to the window
-    spike_count_window_.push_back(spike_counts);
-
-    // Keep window at fixed size
-    if (spike_count_window_.size() > window_size_) {
-      spike_count_window_.pop_front();
-    }
-
-    // Calculate cursor position based on the binned spike counts
-    float cursor_x = 0.0f;
-    float cursor_y = 0.0f;
-
-    // Only calculate cursor position if we have enough data in the window
-    if (spike_count_window_.size() == window_size_) {
-      if (enable_inference_ && model_ && model_->is_ready()) {
-        // Use the inference model to decode cursor position from spike counts
-        auto [x, y] = run_inference(spike_counts);
-        cursor_x = x;
-        cursor_y = y;
-      } else {
-        // Fixed-weight decoding: use differential firing rates across channel pairs
-        auto [x, y] = calculate_cursor_position(spike_counts);
-        cursor_x = x;
-        cursor_y = y;
-      }
-    }
-
-    // Create a tensor with the cursor position
-    synapse::Tensor output_tensor;
-    const auto tensor_shape = {2};
-    output_tensor.mutable_shape()->Add(tensor_shape.begin(), tensor_shape.end());
-    output_tensor.set_dtype(synapse::Tensor_DType_DT_FLOAT);
-    output_tensor.set_endianness(synapse::Tensor_Endianness_TENSOR_LITTLE_ENDIAN);
-
-    // Use the calculated cursor position instead of raw data values
-    output_tensor.set_data(synapse::pack_tensor_data({cursor_x, cursor_y}));
-
-    const auto current_time_ns = synapse::get_steady_clock_now();
-    output_tensor.set_timestamp_ns(current_time_ns.count());
-
-    // Then, send off your data using the publisher you configured earlier
-    // In this demo, we use a ZMQ publisher over tcp
-    if (publish_rate_limiter_.reset_if_elapsed()) {
-      if (publish_tap("joystick_out", output_tensor)) {
-        spdlog::info("Published tensor: [x,y]: [{},{}]", cursor_x, cursor_y);
-      } else {
-        spdlog::warn("Failed to publish tensor data");
-      }
-      stop_profile("full_loop");
-
-      // We can also get a debug print of the output
-      print_profile("full_loop");
-    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
 
   for (auto& source : sources_) {
@@ -188,17 +138,105 @@ void FixedWeightDecoder::process_source(InputSource& source, const float bin_siz
       continue;
     }
 
+    // Keep track of how long processing takes. Every stream reports into the same label, so
+    // the profile covers a bin of work whichever stream produced it
+    start_profile(source.loop_profile);
+
     // Cleanup any previously detected spikes before processing new frames
     cleanup_spike_events(source);
 
-    auto spike_counts = count_spikes(source);
-    {
-      std::lock_guard<std::mutex> lock(ready_bins_mutex_);
-      // ponytail: one slot per node, a new bin replaces an unconsumed one. Dropping the oldest
-      // bin is what you want for cursor control; queue them if you need every bin
-      ready_bins_[source.node_id] = std::move(spike_counts);
+    decode_and_publish(source, count_spikes(source));
+    publish_packet_loss(source);
+
+    stop_profile(source.loop_profile);
+  }
+}
+
+void FixedWeightDecoder::decode_and_publish(InputSource& source,
+                                            const std::vector<uint32_t>& spike_counts) {
+  // Add current binned spike counts to this stream's window
+  source.spike_count_window.push_back(spike_counts);
+
+  // Keep window at fixed size
+  if (source.spike_count_window.size() > static_cast<size_t>(window_size_)) {
+    source.spike_count_window.pop_front();
+  }
+
+  // Calculate cursor position based on the binned spike counts
+  float cursor_x = 0.0f;
+  float cursor_y = 0.0f;
+
+  // Only calculate cursor position if we have enough data in the window
+  if (source.spike_count_window.size() == static_cast<size_t>(window_size_)) {
+    if (enable_inference_ && source.model && source.model->is_ready()) {
+      // Use the inference model to decode cursor position from spike counts
+      auto [x, y] = run_inference(source, spike_counts);
+      cursor_x = x;
+      cursor_y = y;
+    } else {
+      // Fixed-weight decoding: use differential firing rates across channel pairs
+      auto [x, y] = calculate_cursor_position(source, spike_counts);
+      cursor_x = x;
+      cursor_y = y;
     }
-    ready_bins_available_.notify_one();
+  }
+
+  // Create a tensor with the cursor position
+  synapse::Tensor output_tensor;
+  const auto tensor_shape = {2};
+  output_tensor.mutable_shape()->Add(tensor_shape.begin(), tensor_shape.end());
+  output_tensor.set_dtype(synapse::Tensor_DType_DT_FLOAT);
+  output_tensor.set_endianness(synapse::Tensor_Endianness_TENSOR_LITTLE_ENDIAN);
+
+  // Use the calculated cursor position instead of raw data values
+  output_tensor.set_data(synapse::pack_tensor_data({cursor_x, cursor_y}));
+
+  const auto current_time_ns = synapse::get_steady_clock_now();
+  output_tensor.set_timestamp_ns(current_time_ns.count());
+
+  // Then, send off your data on this stream's own tap
+  if (source.publish_rate_limiter.reset_if_elapsed()) {
+    if (publish_tap(source.joystick_tap, output_tensor)) {
+      spdlog::info("{}: [x,y]: [{},{}]", source.joystick_tap, cursor_x, cursor_y);
+    } else {
+      spdlog::warn("Failed to publish tensor data on {}", source.joystick_tap);
+    }
+
+    // We can also get a debug print of the output
+    print_profile(source.loop_profile);
+  }
+}
+
+void FixedWeightDecoder::publish_packet_loss(InputSource& source) {
+  if (!source.loss_report_limiter.reset_if_elapsed()) {
+    return;
+  }
+
+  const double loss_percent =
+      source.frames_received == 0
+          ? 0.0
+          : (100.0 * static_cast<double>(source.frames_dropped) /
+             static_cast<double>(source.frames_received + source.frames_dropped));
+
+  if (source.frames_dropped == 0) {
+    spdlog::info("node {}: no loss, {} frames received", source.node_id, source.frames_received);
+  } else {
+    spdlog::warn("node {}: dropped {} of {} expected frames ({:.4f}%)", source.node_id,
+                 source.frames_dropped, source.frames_received + source.frames_dropped,
+                 loss_percent);
+  }
+
+  google::protobuf::Struct stats;
+  auto& fields = *stats.mutable_fields();
+  fields["node_id"].set_number_value(source.node_id);
+  fields["frames_received"].set_number_value(static_cast<double>(source.frames_received));
+  fields["frames_dropped"].set_number_value(static_cast<double>(source.frames_dropped));
+  fields["loss_percent"].set_number_value(loss_percent);
+  fields["timestamp_ns"].set_number_value(
+      static_cast<double>(synapse::get_steady_clock_now().count()));
+
+  if (!publish_tap(source.packet_loss_tap, stats)) {
+    spdlog::warn("Failed to publish packet loss on {}", source.packet_loss_tap);
   }
 }
 
@@ -236,39 +274,22 @@ std::vector<uint32_t> FixedWeightDecoder::count_spikes(InputSource& source) {
   return spike_counts;
 }
 
-bool FixedWeightDecoder::wait_for_bins(std::vector<uint32_t>& spike_counts) {
-  std::map<uint32_t, std::vector<uint32_t>> bins;
-  {
-    std::unique_lock<std::mutex> lock(ready_bins_mutex_);
-    const auto have_every_bin = ready_bins_available_.wait_for(
-        lock, std::chrono::milliseconds(100),
-        [this]() { return !node_running_ || ready_bins_.size() == sources_.size(); });
-    if (!have_every_bin || !node_running_) {
-      return false;
-    }
-    bins.swap(ready_bins_);
-  }
-
-  // Concatenate in node id order, so a channel keeps the same index from one bin to the next.
-  // With a single input node this is just that node's spike counts
-  spike_counts.clear();
-  for (const auto& [node_id, counts] : bins) {
-    spike_counts.insert(spike_counts.end(), counts.begin(), counts.end());
-  }
-
-  return !spike_counts.empty();
-}
-
 std::pair<float, float> FixedWeightDecoder::calculate_cursor_position(
-    const std::vector<uint32_t>& spike_counts) {
+    InputSource& source, const std::vector<uint32_t>& spike_counts) {
   // Calculate firing rates over the window for each cursor control channel
   std::array<float, 4> firing_rates = {0.0f, 0.0f, 0.0f, 0.0f};
 
+  std::array<size_t, 4> channels;
+  {
+    // The control tap can re-steer the channels from another thread at any point
+    std::lock_guard<std::mutex> lock(cursor_channel_mutex_);
+    channels = cursor_channels_;
+  }
+
   for (int i = 0; i < 4; i++) {
-    size_t ch = cursor_channels_[i];
-    for (const auto& bin_counts : spike_count_window_) {
-      // The cursor channels index every input node's channels concatenated, so a config can
-      // name one past the end
+    size_t ch = channels[i];
+    for (const auto& bin_counts : source.spike_count_window) {
+      // Cursor channels index within one stream, so a config can name one past the end
       if (ch >= bin_counts.size()) {
         continue;
       }
@@ -288,7 +309,7 @@ std::pair<float, float> FixedWeightDecoder::calculate_cursor_position(
   return {cursor_x, cursor_y};
 }
 
-void FixedWeightDecoder::setup_inference() {
+void FixedWeightDecoder::log_inference_runtimes() {
   // Log available inference runtimes on this device
   auto runtimes = synapse::get_available_runtimes();
   spdlog::info("Available inference runtimes:");
@@ -303,14 +324,18 @@ void FixedWeightDecoder::setup_inference() {
     spdlog::info("  - {}", name);
   }
 
+}
+
+void FixedWeightDecoder::setup_inference(InputSource& source) {
   // Load the model by name from /opt/scifi/data/models/
   // Deploy a model with: synapsectl deploy-model model.onnx --name <model_name> -u <device>
-  model_ = synapse::create_model(model_name_);
+  // Every stream gets its own instance, BaseModel is not shared across threads
+  source.model = synapse::create_model(model_name_);
 
-  if (model_ && model_->is_ready()) {
-    spdlog::info("Inference model '{}' loaded successfully", model_name_);
+  if (source.model && source.model->is_ready()) {
+    spdlog::info("Node {}: inference model '{}' loaded successfully", source.node_id, model_name_);
 
-    auto inputs = model_->get_input_info();
+    auto inputs = source.model->get_input_info();
     for (const auto& input : inputs) {
       std::string shape_str;
       for (size_t i = 0; i < input.shape.size(); ++i) {
@@ -320,7 +345,7 @@ void FixedWeightDecoder::setup_inference() {
       spdlog::info("  Input: {} shape=[{}] elements={}", input.name, shape_str, input.element_count);
     }
 
-    auto outputs = model_->get_output_info();
+    auto outputs = source.model->get_output_info();
     for (const auto& output : outputs) {
       std::string shape_str;
       for (size_t i = 0; i < output.shape.size(); ++i) {
@@ -331,21 +356,22 @@ void FixedWeightDecoder::setup_inference() {
                     output.element_count);
     }
   } else {
-    spdlog::warn("Model '{}' not available - falling back to fixed-weight decoding", model_name_);
+    spdlog::warn("Node {}: model '{}' not available - falling back to fixed-weight decoding",
+                 source.node_id, model_name_);
     spdlog::warn("Deploy a model with: synapsectl deploy-model <model.onnx> --name {} -u <device>",
                   model_name_);
   }
 }
 
 std::pair<float, float> FixedWeightDecoder::run_inference(
-    const std::vector<uint32_t>& spike_counts) {
-  if (!model_ || !model_->is_ready()) {
-    return calculate_cursor_position(spike_counts);
+    InputSource& source, const std::vector<uint32_t>& spike_counts) {
+  if (!source.model || !source.model->is_ready()) {
+    return calculate_cursor_position(source, spike_counts);
   }
 
-  auto inputs = model_->get_input_info();
+  auto inputs = source.model->get_input_info();
   if (inputs.empty()) {
-    return calculate_cursor_position(spike_counts);
+    return calculate_cursor_position(source, spike_counts);
   }
 
   // Convert spike counts to float input for the model
@@ -354,26 +380,28 @@ std::pair<float, float> FixedWeightDecoder::run_inference(
     input_features[i] = static_cast<float>(spike_counts[i]);
   }
 
-  start_profile("inference");
-  auto result = model_->infer({input_features});
-  stop_profile("inference");
-  print_profile("inference");
+  start_profile(source.inference_profile);
+  auto result = source.model->infer({input_features});
+  stop_profile(source.inference_profile);
+  print_profile(source.inference_profile);
 
   if (!result.success || result.outputs.empty()) {
-    spdlog::warn("Inference failed, falling back to fixed-weight decoding");
-    return calculate_cursor_position(spike_counts);
+    spdlog::warn("Node {}: inference failed, falling back to fixed-weight decoding",
+                 source.node_id);
+    return calculate_cursor_position(source, spike_counts);
   }
 
   // Update benchmarking stats
-  inference_count_++;
-  inference_total_us_ += result.inference_time_us;
-  inference_min_us_ = std::min(inference_min_us_, result.inference_time_us);
-  inference_max_us_ = std::max(inference_max_us_, result.inference_time_us);
+  source.inference_count++;
+  source.inference_total_us += result.inference_time_us;
+  source.inference_min_us = std::min(source.inference_min_us, result.inference_time_us);
+  source.inference_max_us = std::max(source.inference_max_us, result.inference_time_us);
 
-  if (inference_count_ % 100 == 0) {
-    uint64_t avg_us = inference_total_us_ / inference_count_;
-    spdlog::info("Inference stats: count={}, avg={} us, min={} us, max={} us",
-                  inference_count_, avg_us, inference_min_us_, inference_max_us_);
+  if (source.inference_count % 100 == 0) {
+    uint64_t avg_us = source.inference_total_us / source.inference_count;
+    spdlog::info("Node {} inference stats: count={}, avg={} us, min={} us, max={} us",
+                 source.node_id, source.inference_count, avg_us, source.inference_min_us,
+                 source.inference_max_us);
   }
 
   // Model output: expect at least 2 values [cursor_x, cursor_y]
@@ -435,12 +463,17 @@ bool FixedWeightDecoder::wait_for_frames(InputSource& source, const float bin_si
 
       const auto& broadband_frame = maybe_frame.value();
 
-      // Check for dropped frames
-      const auto dropped_frames =
-          detect_dropped_frames(source.last_sequence_number, broadband_frame.sequence_number());
-      if (dropped_frames != 0) {
-        spdlog::warn("Node {} dropped: {} frames", source.node_id, dropped_frames);
+      // Track packet loss from gaps in the sequence numbers. The first frame we ever see only
+      // seeds the counter, there is no earlier frame to compare it against
+      source.frames_received++;
+      if (source.have_sequence_number) {
+        const auto dropped_frames =
+            detect_dropped_frames(source.last_sequence_number, broadband_frame.sequence_number());
+        if (dropped_frames > 0) {
+          source.frames_dropped += static_cast<uint64_t>(dropped_frames);
+        }
       }
+      source.have_sequence_number = true;
       source.last_sequence_number = broadband_frame.sequence_number();
 
       // Add the frame to our collection
@@ -498,6 +531,14 @@ void FixedWeightDecoder::initialize_source(InputSource& source, const float bin_
   spdlog::info("Node {} initialized {} filters and spike detectors with threshold: {} uV",
                source.node_id, source.channel_count, spike_threshold_);
   source.initialized = true;
+
+  // A cursor channel has to be valid on every stream, so track the smallest channel count
+  size_t current = min_channel_count_.load();
+  while ((current == 0 || source.channel_count < current) &&
+         !min_channel_count_.compare_exchange_weak(current, source.channel_count)) {
+  }
+
+  initialize_cursor_channels(min_channel_count_.load());
 }
 
 void FixedWeightDecoder::cleanup_spike_events(InputSource& source) {
@@ -633,9 +674,9 @@ void FixedWeightDecoder::handle_update_request(const google::protobuf::ListValue
       return;
     }
 
-    // Cursor channels index every input node's channels concatenated, which we only know once
-    // every node has sent us a bin
-    const size_t channel_count = total_channel_count_;
+    // Cursor channels index within a stream and apply to all of them, so they have to be valid
+    // on the narrowest one. We only know that once each node has sent us a bin
+    const size_t channel_count = min_channel_count_;
     if (channel_count == 0) {
       spdlog::warn("Got an update request before any data arrived, ignoring it");
       return;
@@ -662,7 +703,7 @@ void FixedWeightDecoder::handle_update_request(const google::protobuf::ListValue
         cursor_channels_[i] = values[i].number_value();
       }
     }
-    initialize_cursor_channels(total_channel_count_);
+    initialize_cursor_channels(min_channel_count_);
   } catch (const std::exception& e) {
     spdlog::error("Got a reset request, but had trouble parsing. Why: {}", e.what());
   }
