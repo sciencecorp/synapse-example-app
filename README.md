@@ -18,22 +18,6 @@ Synapse Apps are standalone applications that can be deployed to a synapse devic
 
 Apps can be integrated into existing signal chains using `kApplication` node type. See the [Synapse API documentation](https://github.com/sciencecorp/synapse-api/tree/main) for more details.
 
-## Signal chain
-
-`config/simulator_32ch.json` runs a diamond: the virtual record peripheral fans out into two
-spectral filter nodes, and both feed the app.
-
-```
-                      +--> (3) kSpectralFilter kBandStop 55-65 Hz --+
-(1) kBroadbandSource -+                                             +--> (2) kApplication
-                      +--> (4) kSpectralFilter kHighPass 300 Hz ----+
-```
-
-An application node is the only node type that can have more than one incoming connection. The
-app sets up one reader per connected node with `setup_readers()` and reads each on its own
-thread, so this works the same for one input node or several - see
-[Reading from several input nodes](#reading-from-several-input-nodes).
-
 ## Prerequisites
 Before beginning, make sure you have the following installed:
  - Python3.10+
@@ -359,12 +343,17 @@ To dynamically update which channels are used for cursor control:
 python3 ${REPO_ROOT}/client/update_channels.py --device-ip <your-device-ip> --channels 0 1 2 3
 ```
 
-This will send a message to the `set_cursor_channels` tap to update the four channels used for joystick control. The channels index within a single stream and apply to every stream at once, so they must be valid on the narrowest one - with `simulator_32ch.json` that is 0-31.
+This will send a message to the `set_cursor_channels` tap to update the four channels used for joystick control. The channels index within a single input node's channels and apply to every stream at once, so with `simulator_32ch.json` the range is 0-31.
 
 ## Reading from several input nodes
 
-`setup_readers()` creates one reader per node the device configuration connects to the app,
-keyed by node id. Each reader owns its own socket, so the app gives each one a thread:
+`config/simulator_32ch.json` wires a single broadband source into the app, which is the simplest
+case. The app is not limited to that: `setup_readers()` creates one reader per node the device
+configuration connects to it, keyed by node id, and each reader owns its own socket so the app
+gives each one a thread. `config/three_broadband_sources.json` runs three probes this way.
+
+Note that a configuration with several nodes feeding one application node needs a device build
+that allows it - see sciencecorp/headstage#544.
 
 ```cpp
 // setup()
